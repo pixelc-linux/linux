@@ -31,6 +31,7 @@ config SND_SOC_TEGRA_ALT_210
 config SND_SOC_TEGRA30_XBAR_ALT
 	tristate "Tegra30 XBAR driver"
 	depends on SND_SOC_TEGRA_ALT && SND_SOC_TEGRA_ALT_30_OR_LATER
+	depends on BROKEN
 	help
 	  Say Y or M if you want to add support for Tegra30 XBAR module.
 
