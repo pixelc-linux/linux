@@ -248,8 +248,14 @@ static int spidev_message(struct spidev_data *spidev,
 	 *  Check to see if we should use preferred alignment
 	 *  Don't use if we exceed maxiumum buffer size
 	 */
-	for (n = 0; n < n_xfers; n++)
-		total += round_up(u_xfers->len, alignment);
+	for (n = 0; n < n_xfers; n++) {
+		total += round_up(u_xfers[n].len, alignment);
+
+		if (total < u_xfers[n].len || total > bufsiz) {
+			status = -EMSGSIZE;
+			goto done;
+		}
+	}
 
 	if (total >= bufsiz)
 		alignment = 1;
@@ -262,7 +268,7 @@ static int spidev_message(struct spidev_data *spidev,
 
 		total += round_up(k_tmp->len, alignment);
 
-		if (total > bufsiz) {
+		if (total < k_tmp->len || total > bufsiz) {
 			status = -EMSGSIZE;
 			goto done;
 		}
