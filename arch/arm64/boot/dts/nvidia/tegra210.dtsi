@@ -35,7 +35,7 @@
 			clock-names = "dpaux", "parent";
 			resets = <&tegra_car 207>;
 			reset-names = "dpaux";
-			power-domains = <&pd_sor>;
+
 			status = "disabled";
 
 			state_dpaux1_aux: pinmux-aux {
@@ -110,7 +110,7 @@
 			clock-names = "dsi", "lp", "parent";
 			resets = <&tegra_car 48>;
 			reset-names = "dsi";
-			power-domains = <&pd_sor>;
+
 			nvidia,mipi-calibrate = <&mipi 0x0c0>; /* DSIA & DSIB pads */
 
 			status = "disabled";
@@ -140,7 +140,7 @@
 			clock-names = "dsi", "lp", "parent";
 			resets = <&tegra_car 82>;
 			reset-names = "dsi";
-			power-domains = <&pd_sor>;
+
 			nvidia,mipi-calibrate = <&mipi 0x300>; /* DSIC & DSID pads */
 
 			status = "disabled";
@@ -182,7 +182,7 @@
 			pinctrl-1 = <&state_dpaux_i2c>;
 			pinctrl-2 = <&state_dpaux_off>;
 			pinctrl-names = "aux", "i2c", "off";
-			power-domains = <&pd_sor>;
+
 			status = "disabled";
 		};
 
@@ -202,7 +202,7 @@
 			pinctrl-1 = <&state_dpaux1_i2c>;
 			pinctrl-2 = <&state_dpaux1_off>;
 			pinctrl-names = "aux", "i2c", "off";
-			power-domains = <&pd_sor>;
+
 			status = "disabled";
 		};
 
@@ -215,7 +215,7 @@
 			clock-names = "dpaux", "parent";
 			resets = <&tegra_car 181>;
 			reset-names = "dpaux";
-			power-domains = <&pd_sor>;
+
 			status = "disabled";
 
 			state_dpaux_aux: pinmux-aux {
@@ -655,26 +655,6 @@
 				#power-domain-cells = <0>;
 			};
 
-			pd_sor: sor {
-				clocks = <&tegra_car TEGRA210_CLK_SOR0>,
-					 <&tegra_car TEGRA210_CLK_SOR1>,
-					 <&tegra_car TEGRA210_CLK_CSI>,
-					 <&tegra_car TEGRA210_CLK_DSIA>,
-					 <&tegra_car TEGRA210_CLK_DSIB>,
-					 <&tegra_car TEGRA210_CLK_DPAUX>,
-					 <&tegra_car TEGRA210_CLK_DPAUX1>,
-					 <&tegra_car TEGRA210_CLK_MIPI_CAL>;
-				resets = <&tegra_car TEGRA210_CLK_SOR0>,
-					 <&tegra_car TEGRA210_CLK_SOR1>,
-					 <&tegra_car TEGRA210_CLK_CSI>,
-					 <&tegra_car TEGRA210_CLK_DSIA>,
-					 <&tegra_car TEGRA210_CLK_DSIB>,
-					 <&tegra_car TEGRA210_CLK_DPAUX>,
-					 <&tegra_car TEGRA210_CLK_DPAUX1>,
-					 <&tegra_car TEGRA210_CLK_MIPI_CAL>;
-				#power-domain-cells = <0>;
-			};
-
 			pd_xusbss: xusba {
 				clocks = <&tegra_car TEGRA210_CLK_XUSB_SS>;
 				resets = <&tegra_car TEGRA210_CLK_XUSB_SS>;
@@ -969,7 +949,7 @@
 		reg = <0x0 0x700e3000 0x0 0x100>;
 		clocks = <&tegra_car TEGRA210_CLK_MIPI_CAL>;
 		clock-names = "mipi-cal";
-		power-domains = <&pd_sor>;
+
 		#nvidia,mipi-calibrate-cells = <1>;
 	};
 
@@ -1120,31 +1100,63 @@
 	};
 
 	cpus {
-		#address-cells = <1>;
+		#address-cells = <2>;
 		#size-cells = <0>;
 
 		cpu@0 {
 			device_type = "cpu";
-			compatible = "arm,cortex-a57";
-			reg = <0>;
+			compatible = "arm,cortex-a57", "arm,armv8";
+			reg = <0x0 0x0>;
+			enable-method = "psci";
+			clocks = <&tegra_car TEGRA210_CLK_CCLK_G>,
+				 <&tegra_car TEGRA210_CLK_CCLK_LP>,
+				 <&tegra_car TEGRA210_CLK_PLL_X>,
+				 <&tegra_car TEGRA210_CLK_PLL_P_OUT4>;
+			clock-names = "cpu_g", "cpu_lp", "pll_x", "pll_p";
+			clock-latency = <300000>;
+			cpu-idle-states = <&C7>;
+			next-level-cache = <&L2>;
 		};
 
 		cpu@1 {
 			device_type = "cpu";
-			compatible = "arm,cortex-a57";
-			reg = <1>;
+			compatible = "arm,cortex-a57", "arm,armv8";
+			reg = <0x0 0x1>;
+			enable-method = "psci";
+			cpu-idle-states = <&C7>;
+			next-level-cache = <&L2>;
 		};
 
 		cpu@2 {
 			device_type = "cpu";
-			compatible = "arm,cortex-a57";
-			reg = <2>;
+			compatible = "arm,cortex-a57", "arm,armv8";
+			reg = <0x0 0x2>;
+			enable-method = "psci";
+			cpu-idle-states = <&C7>;
+			next-level-cache = <&L2>;
 		};
 
 		cpu@3 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a57";
-			reg = <3>;
+			reg = <0x0 0x3>;
+			enable-method = "psci";
+			cpu-idle-states = <&C7>;
+			next-level-cache = <&L2>;
+		};
+		idle-states {
+			enable-method = "arm,psci";
+			C7: c7 {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x00010007>;
+				wakeup-latency-us = <130>;
+				min-residency-us = <1000>;
+				idle-state-name = "c7-cpu-powergate";
+				status = "okay";
+			};
+		};
+		L2: l2-cache {
+			compatible = "cache";
 		};
 	};
 
