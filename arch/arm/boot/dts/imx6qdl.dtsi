@@ -1294,8 +1294,6 @@
 			};
 
 			ipu1_di0: port@2 {
-				#address-cells = <1>;
-				#size-cells = <0>;
 				reg = <2>;
 
 				ipu1_di0_disp0: disp0-endpoint {
@@ -1319,8 +1317,6 @@
 			};
 
 			ipu1_di1: port@3 {
-				#address-cells = <1>;
-				#size-cells = <0>;
 				reg = <3>;
 
 				ipu1_di1_disp1: disp1-endpoint {
