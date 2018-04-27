@@ -3158,6 +3158,8 @@ out:
 	/* once for the tree */
 	btrfs_put_ordered_extent(ordered_extent);
 
+	btrfs_btree_balance_dirty(fs_info);
+
 	return ret;
 }
 
