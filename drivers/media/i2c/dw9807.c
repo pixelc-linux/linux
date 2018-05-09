@@ -78,7 +78,7 @@ static int dw9807_set_dac(struct i2c_client *client, u16 data)
 	const char tx_data[3] = {
 		DW9807_MSB_ADDR, ((data >> 8) & 0x03), (data & 0xff)
 	};
-	int val, ret, retry = 0;
+	int val, ret;
 
 	/*
 	 * According to the datasheet, need to check the bus status before we
