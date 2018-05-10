@@ -15,6 +15,7 @@
 #include <linux/dm-kcopyd.h>
 #include <linux/dax.h>
 #include <linux/pfn_t.h>
+#include <linux/libnvdimm.h>
 
 #define DM_MSG_PREFIX "writecache"
 
@@ -42,18 +43,57 @@
 #endif
 
 /*
+ * API for optimized flushing of persistent memory:
  * On X86, non-temporal stores are more efficient than cache flushing.
  * On ARM64, cache flushing is more efficient.
+ *
+ * This API is a candidate for being elevated out of DM but for now
+ * it serves to cleanly allow optimized flushing without excessive
+ * branching throughout this target's code.
  */
 #if defined(CONFIG_X86_64)
-#define EAGER_DATA_FLUSH
-#define NT_STORE(dest, src)				\
-do {							\
-	typeof(src) val = (src);			\
-	memcpy_flushcache(&(dest), &val, sizeof(src));	\
+
+#define __pmem_assign(dest, src, uniq)				\
+do {								\
+	typeof(dest) uniq = (src);				\
+	memcpy_flushcache(&(dest), &uniq, sizeof(dest));	\
 } while (0)
+
+#define pmem_assign(dest, src)					\
+	__pmem_assign(dest, src, __UNIQUE_ID(pmem_assign))
+
+static void pmem_memcpy(void *dest, void *src, size_t len)
+{
+	memcpy_flushcache(dest, src, len);
+}
+
+static void pmem_flush(void *dest, size_t len)
+{
+}
+
+static void pmem_commit(void)
+{
+	wmb();
+}
+
 #else
-#define NT_STORE(dest, src)	WRITE_ONCE(dest, src)
+
+#define pmem_assign(dest, src)	WRITE_ONCE(dest, src)
+
+static void pmem_memcpy(void *dest, void *src, size_t len)
+{
+	memcpy(dest, src, len);
+}
+
+static void pmem_flush(void *dest, size_t len)
+{
+	arch_wb_cache_pmem(dest, len);
+}
+
+static void pmem_commit(void)
+{
+}
+
 #endif
 
 #if defined(__HAVE_ARCH_MEMCPY_MCSAFE) && !defined(DM_WRITECACHE_ONLY_SSD)
@@ -341,21 +381,6 @@ static void persistent_memory_invalidate_cache(void *ptr, size_t size)
 		invalidate_kernel_vmap_range(ptr, size);
 }
 
-static void persistent_memory_flush(struct dm_writecache *wc, void *ptr, size_t size)
-{
-#ifndef EAGER_DATA_FLUSH
-	dax_flush(wc->ssd_dev->dax_dev, ptr, size);
-#endif
-}
-
-static void persistent_memory_commit_flushed(void)
-{
-#ifdef EAGER_DATA_FLUSH
-	/* needed since memcpy_flushcache is used instead of dax_flush */
-	wmb();
-#endif
-}
-
 static struct wc_memory_superblock *sb(struct dm_writecache *wc)
 {
 	return wc->memory_map;
@@ -403,21 +428,20 @@ static void clear_seq_count(struct dm_writecache *wc, struct wc_entry *e)
 #ifdef DM_WRITECACHE_HANDLE_HARDWARE_ERRORS
 	e->seq_count = -1;
 #endif
-	NT_STORE(memory_entry(wc, e)->seq_count, cpu_to_le64(-1));
+	pmem_assign(memory_entry(wc, e)->seq_count, cpu_to_le64(-1));
 }
 
 static void write_original_sector_seq_count(struct dm_writecache *wc, struct wc_entry *e,
 					    uint64_t original_sector, uint64_t seq_count)
 {
-	struct wc_memory_entry *me_p, me;
+	struct wc_memory_entry me;
 #ifdef DM_WRITECACHE_HANDLE_HARDWARE_ERRORS
 	e->original_sector = original_sector;
 	e->seq_count = seq_count;
 #endif
-	me_p = memory_entry(wc, e);
 	me.original_sector = cpu_to_le64(original_sector);
 	me.seq_count = cpu_to_le64(seq_count);
-	NT_STORE(*me_p, me);
+	pmem_assign(*memory_entry(wc, e), me);
 }
 
 #define writecache_error(wc, err, msg, arg...)				\
@@ -432,8 +456,7 @@ do {									\
 static void writecache_flush_all_metadata(struct dm_writecache *wc)
 {
 	if (WC_MODE_PMEM(wc)) {
-		persistent_memory_flush(wc,
-			sb(wc), offsetof(struct wc_memory_superblock, entries[wc->n_blocks]));
+		pmem_flush(sb(wc), offsetof(struct wc_memory_superblock, entries[wc->n_blocks]));
 	} else {
 		memset(wc->dirty_bitmap, -1, wc->dirty_bitmap_size);
 	}
@@ -442,7 +465,7 @@ static void writecache_flush_all_metadata(struct dm_writecache *wc)
 static void writecache_flush_region(struct dm_writecache *wc, void *ptr, size_t size)
 {
 	if (WC_MODE_PMEM(wc))
-		persistent_memory_flush(wc, ptr, size);
+		pmem_flush(ptr, size);
 	else
 		__set_bit(((char *)ptr - (char *)wc->memory_map) / BITMAP_GRANULARITY,
 			  wc->dirty_bitmap);
@@ -520,7 +543,7 @@ static void ssd_commit_flushed(struct dm_writecache *wc)
 static void writecache_commit_flushed(struct dm_writecache *wc)
 {
 	if (WC_MODE_PMEM(wc))
-		persistent_memory_commit_flushed();
+		pmem_commit();
 	else
 		ssd_commit_flushed(wc);
 }
@@ -710,10 +733,8 @@ static void writecache_poison_lists(struct dm_writecache *wc)
 static void writecache_flush_entry(struct dm_writecache *wc, struct wc_entry *e)
 {
 	writecache_flush_region(wc, memory_entry(wc, e), sizeof(struct wc_memory_entry));
-#ifndef EAGER_DATA_FLUSH
 	if (WC_MODE_PMEM(wc))
 		writecache_flush_region(wc, memory_data(wc, e), wc->block_size);
-#endif
 }
 
 static bool writecache_entry_is_committed(struct dm_writecache *wc, struct wc_entry *e)
@@ -756,7 +777,7 @@ static void writecache_flush(struct dm_writecache *wc)
 	writecache_wait_for_ios(wc, WRITE);
 
 	wc->seq_count++;
-	NT_STORE(sb(wc)->seq_count, cpu_to_le64(wc->seq_count));
+	pmem_assign(sb(wc)->seq_count, cpu_to_le64(wc->seq_count));
 	writecache_flush_region(wc, &sb(wc)->seq_count, sizeof sb(wc)->seq_count);
 	writecache_commit_flushed(wc);
 
@@ -1073,11 +1094,7 @@ static void bio_copy_block(struct dm_writecache *wc, struct bio *bio, void *data
 			}
 		} else {
 			flush_dcache_page(bio_page(bio));
-#ifdef EAGER_DATA_FLUSH
-			memcpy_flushcache(data, buf, size);
-#else
-			memcpy(data, buf, size);
-#endif
+			pmem_memcpy(data, buf, size);
 		}
 
 		bvec_kunmap_irq(buf, &flags);
@@ -1750,18 +1767,18 @@ static int init_memory(struct dm_writecache *wc)
 		return r;
 
 	for (b = 0; b < ARRAY_SIZE(sb(wc)->padding); b++)
-		NT_STORE(sb(wc)->padding[b], cpu_to_le64(0));
-	NT_STORE(sb(wc)->version, cpu_to_le32(MEMORY_SUPERBLOCK_VERSION));
-	NT_STORE(sb(wc)->block_size, cpu_to_le32(wc->block_size));
-	NT_STORE(sb(wc)->n_blocks, cpu_to_le64(wc->n_blocks));
-	NT_STORE(sb(wc)->seq_count, cpu_to_le64(0));
+		pmem_assign(sb(wc)->padding[b], cpu_to_le64(0));
+	pmem_assign(sb(wc)->version, cpu_to_le32(MEMORY_SUPERBLOCK_VERSION));
+	pmem_assign(sb(wc)->block_size, cpu_to_le32(wc->block_size));
+	pmem_assign(sb(wc)->n_blocks, cpu_to_le64(wc->n_blocks));
+	pmem_assign(sb(wc)->seq_count, cpu_to_le64(0));
 
 	for (b = 0; b < wc->n_blocks; b++)
 		write_original_sector_seq_count(wc, &wc->entries[b], -1, -1);
 
 	writecache_flush_all_metadata(wc);
 	writecache_commit_flushed(wc);
-	NT_STORE(sb(wc)->magic, cpu_to_le32(MEMORY_SUPERBLOCK_MAGIC));
+	pmem_assign(sb(wc)->magic, cpu_to_le32(MEMORY_SUPERBLOCK_MAGIC));
 	writecache_flush_region(wc, &sb(wc)->magic, sizeof sb(wc)->magic);
 	writecache_commit_flushed(wc);
 
