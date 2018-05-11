@@ -1882,8 +1882,8 @@ static int qgroup_update_counters(struct btrfs_fs_info *fs_info,
 		cur_old_count = btrfs_qgroup_get_old_refcnt(qg, seq);
 		cur_new_count = btrfs_qgroup_get_new_refcnt(qg, seq);
 
-		trace_qgroup_update_counters(fs_info, qg->qgroupid,
-					     cur_old_count, cur_new_count);
+		trace_qgroup_update_counters(fs_info, qg, cur_old_count,
+					     cur_new_count);
 
 		/* Rfer update part */
 		if (cur_old_count == 0 && cur_new_count > 0) {
@@ -2014,8 +2014,8 @@ btrfs_qgroup_account_extent(struct btrfs_trans_handle *trans,
 
 	BUG_ON(!fs_info->quota_root);
 
-	trace_btrfs_qgroup_account_extent(fs_info, bytenr, num_bytes,
-					  nr_old_roots, nr_new_roots);
+	trace_btrfs_qgroup_account_extent(fs_info, trans->transid, bytenr,
+					num_bytes, nr_old_roots, nr_new_roots);
 
 	qgroups = ulist_alloc(GFP_NOFS);
 	if (!qgroups) {
@@ -2580,6 +2580,21 @@ out:
 }
 
 /*
+ * Check if the leaf is the last leaf. Which means all node pointers
+ * are at their last position.
+ */
+static bool is_last_leaf(struct btrfs_path *path)
+{
+	int i;
+
+	for (i = 1; i < BTRFS_MAX_LEVEL && path->nodes[i]; i++) {
+		if (path->slots[i] != btrfs_header_nritems(path->nodes[i]) - 1)
+			return false;
+	}
+	return true;
+}
+
+/*
  * returns < 0 on error, 0 when more leafs are to be scanned.
  * returns 1 when done.
  */
@@ -2592,6 +2607,7 @@ qgroup_rescan_leaf(struct btrfs_fs_info *fs_info, struct btrfs_path *path,
 	struct ulist *roots = NULL;
 	struct seq_list tree_mod_seq_elem = SEQ_LIST_INIT(tree_mod_seq_elem);
 	u64 num_bytes;
+	bool done;
 	int slot;
 	int ret;
 
@@ -2606,20 +2622,9 @@ qgroup_rescan_leaf(struct btrfs_fs_info *fs_info, struct btrfs_path *path,
 		fs_info->qgroup_rescan_progress.type,
 		fs_info->qgroup_rescan_progress.offset, ret);
 
-	if (ret) {
-		/*
-		 * The rescan is about to end, we will not be scanning any
-		 * further blocks. We cannot unset the RESCAN flag here, because
-		 * we want to commit the transaction if everything went well.
-		 * To make the live accounting work in this phase, we set our
-		 * scan progress pointer such that every real extent objectid
-		 * will be smaller.
-		 */
-		fs_info->qgroup_rescan_progress.objectid = (u64)-1;
-		btrfs_release_path(path);
-		mutex_unlock(&fs_info->qgroup_rescan_lock);
-		return ret;
-	}
+	done = is_last_leaf(path);
+	if (ret)
+		goto finish;
 
 	btrfs_item_key_to_cpu(path->nodes[0], &found,
 			      btrfs_header_nritems(path->nodes[0]) - 1);
@@ -2665,8 +2670,23 @@ out:
 		free_extent_buffer(scratch_leaf);
 	}
 	btrfs_put_tree_mod_seq(fs_info, &tree_mod_seq_elem);
+	if (done && !ret)
+		goto finish;
 
 	return ret;
+finish:
+	/*
+	 * The rescan is about to end, we will not be scanning any
+	 * further blocks. We cannot unset the RESCAN flag here, because
+	 * we want to commit the transaction if everything went well.
+	 * To make the live accounting work in this phase, we set our
+	 * scan progress pointer such that every real extent objectid
+	 * will be smaller.
+	 */
+	fs_info->qgroup_rescan_progress.objectid = (u64)-1;
+	btrfs_release_path(path);
+	mutex_unlock(&fs_info->qgroup_rescan_lock);
+	return 1;
 }
 
 static void btrfs_qgroup_rescan_worker(struct btrfs_work *work)
@@ -2681,6 +2701,11 @@ static void btrfs_qgroup_rescan_worker(struct btrfs_work *work)
 	path = btrfs_alloc_path();
 	if (!path)
 		goto out;
+	/*
+	 * Rescan should only search for commit root, and any later difference
+	 * should be recorded by qgroup
+	 */
+	path->search_commit_root = 1;
 
 	err = 0;
 	while (!err && !btrfs_fs_closing(fs_info)) {
