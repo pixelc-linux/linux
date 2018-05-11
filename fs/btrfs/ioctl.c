@@ -3138,12 +3138,13 @@ static int btrfs_extent_same(struct inode *src, u64 loff, u64 olen,
 	 * locking. We use an array for the page pointers. Size of the array is
 	 * bounded by len, which is in turn bounded by BTRFS_MAX_DEDUPE_LEN.
 	 */
-	cmp.src_pages = kcalloc(num_pages, sizeof(struct page *), GFP_KERNEL);
-	cmp.dst_pages = kcalloc(num_pages, sizeof(struct page *), GFP_KERNEL);
+	cmp.src_pages = kvmalloc_array(num_pages, sizeof(struct page *),
+				       GFP_KERNEL | __GFP_ZERO);
+	cmp.dst_pages = kvmalloc_array(num_pages, sizeof(struct page *),
+				       GFP_KERNEL | __GFP_ZERO);
 	if (!cmp.src_pages || !cmp.dst_pages) {
-		kfree(cmp.src_pages);
-		kfree(cmp.dst_pages);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto out_free;
 	}
 
 	if (same_inode)
@@ -3171,8 +3172,9 @@ out:
 	else
 		btrfs_double_inode_unlock(src, dst);
 
-	kfree(cmp.src_pages);
-	kfree(cmp.dst_pages);
+out_free:
+	kvfree(cmp.src_pages);
+	kvfree(cmp.dst_pages);
 
 	return ret;
 }
