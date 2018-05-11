@@ -3932,7 +3932,7 @@ cache_acl:
 		break;
 	}
 
-	btrfs_update_iflags(inode);
+	btrfs_sync_inode_flags_to_i_flags(inode);
 	return 0;
 
 make_bad:
@@ -6465,7 +6465,7 @@ static void btrfs_inherit_iflags(struct inode *inode, struct inode *dir)
 			BTRFS_I(inode)->flags |= BTRFS_INODE_NODATASUM;
 	}
 
-	btrfs_update_iflags(inode);
+	btrfs_sync_inode_flags_to_i_flags(inode);
 }
 
 static struct inode *btrfs_new_inode(struct btrfs_trans_handle *trans,
