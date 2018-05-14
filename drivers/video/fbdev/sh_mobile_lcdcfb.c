@@ -2149,10 +2149,8 @@ sh_mobile_lcdc_channel_fb_register(struct sh_mobile_lcdc_chan *ch)
 	if (info->fbdefio) {
 		ch->sglist = vmalloc(sizeof(struct scatterlist) *
 				     ch->fb_size >> PAGE_SHIFT);
-		if (!ch->sglist) {
-			dev_err(ch->lcdc->dev, "cannot allocate sglist\n");
+		if (!ch->sglist)
 			return -ENOMEM;
-		}
 	}
 
 	info->bl_dev = ch->bl;
@@ -2354,8 +2352,7 @@ static int sh_mobile_lcdc_resume(struct device *dev)
 
 static int sh_mobile_lcdc_runtime_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct sh_mobile_lcdc_priv *priv = platform_get_drvdata(pdev);
+	struct sh_mobile_lcdc_priv *priv = dev_get_drvdata(dev);
 
 	/* turn off LCDC hardware */
 	lcdc_write(priv, _LDCNT1R, 0);
@@ -2365,8 +2362,7 @@ static int sh_mobile_lcdc_runtime_suspend(struct device *dev)
 
 static int sh_mobile_lcdc_runtime_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct sh_mobile_lcdc_priv *priv = platform_get_drvdata(pdev);
+	struct sh_mobile_lcdc_priv *priv = dev_get_drvdata(dev);
 
 	__sh_mobile_lcdc_start(priv);
 
@@ -2718,10 +2714,8 @@ static int sh_mobile_lcdc_probe(struct platform_device *pdev)
 	}
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	if (!priv) {
-		dev_err(&pdev->dev, "cannot allocate device data\n");
+	if (!priv)
 		return -ENOMEM;
-	}
 
 	priv->dev = &pdev->dev;
 	priv->meram_dev = pdata->meram_dev;

@@ -572,8 +572,7 @@ EXPORT_SYMBOL_GPL(sh_mobile_meram_cache_update);
 #ifdef CONFIG_PM
 static int sh_mobile_meram_suspend(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct sh_mobile_meram_priv *priv = platform_get_drvdata(pdev);
+	struct sh_mobile_meram_priv *priv = dev_get_drvdata(dev);
 	unsigned int i, j;
 
 	for (i = 0; i < MERAM_REGS_SIZE; i++)
@@ -596,8 +595,7 @@ static int sh_mobile_meram_suspend(struct device *dev)
 
 static int sh_mobile_meram_resume(struct device *dev)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct sh_mobile_meram_priv *priv = platform_get_drvdata(pdev);
+	struct sh_mobile_meram_priv *priv = dev_get_drvdata(dev);
 	unsigned int i, j;
 
 	for (i = 0; i < 32; i++) {
@@ -644,10 +642,8 @@ static int sh_mobile_meram_probe(struct platform_device *pdev)
 	}
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	if (!priv) {
-		dev_err(&pdev->dev, "cannot allocate device data\n");
+	if (!priv)
 		return -ENOMEM;
-	}
 
 	/* Initialize private data. */
 	mutex_init(&priv->lock);
