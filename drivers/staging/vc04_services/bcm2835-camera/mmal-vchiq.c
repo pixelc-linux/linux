@@ -162,9 +162,6 @@ struct vchiq_mmal_instance {
 	/* ensure serialised access to service */
 	struct mutex vchiq_mutex;
 
-	/* ensure serialised access to bulk operations */
-	struct mutex bulk_mutex;
-
 	/* vmalloc page to receive scratch bulk xfers into */
 	void *bulk_scratch;
 
@@ -321,8 +318,6 @@ static void buffer_work_cb(struct work_struct *work)
 					    msg_context->u.bulk.dts,
 					    msg_context->u.bulk.pts);
 
-	/* release message context */
-	release_msg_context(msg_context);
 }
 
 /* enqueue a bulk receive for a given message context */
@@ -331,23 +326,12 @@ static int bulk_receive(struct vchiq_mmal_instance *instance,
 			struct mmal_msg_context *msg_context)
 {
 	unsigned long rd_len;
-	unsigned long flags = 0;
 	int ret;
-
-	/* bulk mutex stops other bulk operations while we have a
-	 * receive in progress - released in callback
-	 */
-	ret = mutex_lock_interruptible(&instance->bulk_mutex);
-	if (ret != 0)
-		return ret;
 
 	rd_len = msg->u.buffer_from_host.buffer_header.length;
 
-	/* take buffer from queue */
-	spin_lock_irqsave(&msg_context->u.bulk.port->slock, flags);
-	if (list_empty(&msg_context->u.bulk.port->buffers)) {
-		spin_unlock_irqrestore(&msg_context->u.bulk.port->slock, flags);
-		pr_err("buffer list empty trying to submit bulk receive\n");
+	if (!msg_context->u.bulk.buffer) {
+		pr_err("bulk.buffer not configured - error in buffer_from_host\n");
 
 		/* todo: this is a serious error, we should never have
 		 * committed a buffer_to_host operation to the mmal
@@ -359,17 +343,8 @@ static int bulk_receive(struct vchiq_mmal_instance *instance,
 		 * waiting bulk receive?
 		 */
 
-		mutex_unlock(&instance->bulk_mutex);
-
 		return -EINVAL;
 	}
-
-	msg_context->u.bulk.buffer =
-	    list_entry(msg_context->u.bulk.port->buffers.next,
-		       struct mmal_buffer, list);
-	list_del(&msg_context->u.bulk.buffer->list);
-
-	spin_unlock_irqrestore(&msg_context->u.bulk.port->slock, flags);
 
 	/* ensure we do not overrun the available buffer */
 	if (rd_len > msg_context->u.bulk.buffer->buffer_size) {
@@ -401,11 +376,6 @@ static int bulk_receive(struct vchiq_mmal_instance *instance,
 
 	vchi_service_release(instance->handle);
 
-	if (ret != 0) {
-		/* callback will not be clearing the mutex */
-		mutex_unlock(&instance->bulk_mutex);
-	}
-
 	return ret;
 }
 
@@ -414,13 +384,6 @@ static int dummy_bulk_receive(struct vchiq_mmal_instance *instance,
 			      struct mmal_msg_context *msg_context)
 {
 	int ret;
-
-	/* bulk mutex stops other bulk operations while we have a
-	 * receive in progress - released in callback
-	 */
-	ret = mutex_lock_interruptible(&instance->bulk_mutex);
-	if (ret != 0)
-		return ret;
 
 	/* zero length indicates this was a dummy transfer */
 	msg_context->u.bulk.buffer_used = 0;
@@ -437,11 +400,6 @@ static int dummy_bulk_receive(struct vchiq_mmal_instance *instance,
 
 	vchi_service_release(instance->handle);
 
-	if (ret != 0) {
-		/* callback will not be clearing the mutex */
-		mutex_unlock(&instance->bulk_mutex);
-	}
-
 	return ret;
 }
 
@@ -450,31 +408,6 @@ static int inline_receive(struct vchiq_mmal_instance *instance,
 			  struct mmal_msg *msg,
 			  struct mmal_msg_context *msg_context)
 {
-	unsigned long flags = 0;
-
-	/* take buffer from queue */
-	spin_lock_irqsave(&msg_context->u.bulk.port->slock, flags);
-	if (list_empty(&msg_context->u.bulk.port->buffers)) {
-		spin_unlock_irqrestore(&msg_context->u.bulk.port->slock, flags);
-		pr_err("buffer list empty trying to receive inline\n");
-
-		/* todo: this is a serious error, we should never have
-		 * committed a buffer_to_host operation to the mmal
-		 * port without the buffer to back it up (with
-		 * underflow handling) and there is no obvious way to
-		 * deal with this. Less bad than the bulk case as we
-		 * can just drop this on the floor but...unhelpful
-		 */
-		return -EINVAL;
-	}
-
-	msg_context->u.bulk.buffer =
-	    list_entry(msg_context->u.bulk.port->buffers.next,
-		       struct mmal_buffer, list);
-	list_del(&msg_context->u.bulk.buffer->list);
-
-	spin_unlock_irqrestore(&msg_context->u.bulk.port->slock, flags);
-
 	memcpy(msg_context->u.bulk.buffer->buffer,
 	       msg->u.buffer_from_host.short_data,
 	       msg->u.buffer_from_host.payload_in_message);
@@ -494,25 +427,23 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
 	struct mmal_msg m;
 	int ret;
 
+	if (!port->enabled)
+		return -EINVAL;
+
 	pr_debug("instance:%p buffer:%p\n", instance->handle, buf);
 
-	/* bulk mutex stops other bulk operations while we
-	 * have a receive in progress
-	 */
-	if (mutex_lock_interruptible(&instance->bulk_mutex))
-		return -EINTR;
-
 	/* get context */
-	msg_context = get_msg_context(instance);
-	if (IS_ERR(msg_context)) {
-		ret = PTR_ERR(msg_context);
-		goto unlock;
+	if (!buf->msg_context) {
+		pr_err("%s: msg_context not allocated, buf %p\n", __func__,
+		       buf);
+		return -EINVAL;
 	}
+	msg_context = buf->msg_context;
 
 	/* store bulk message context for when data arrives */
 	msg_context->u.bulk.instance = instance;
 	msg_context->u.bulk.port = port;
-	msg_context->u.bulk.buffer = NULL;	/* not valid until bulk xfer */
+	msg_context->u.bulk.buffer = buf;
 	msg_context->u.bulk.buffer_used = 0;
 
 	/* initialise work structure ready to schedule callback */
@@ -557,53 +488,7 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
 					sizeof(struct mmal_msg_header) +
 					sizeof(m.u.buffer_from_host));
 
-	if (ret != 0) {
-		release_msg_context(msg_context);
-		/* todo: is this correct error value? */
-	}
-
 	vchi_service_release(instance->handle);
-
-unlock:
-	mutex_unlock(&instance->bulk_mutex);
-
-	return ret;
-}
-
-/* submit a buffer to the mmal sevice
- *
- * the buffer_from_host uses size data from the ports next available
- * mmal_buffer and deals with there being no buffer available by
- * incrementing the underflow for later
- */
-static int port_buffer_from_host(struct vchiq_mmal_instance *instance,
-				 struct vchiq_mmal_port *port)
-{
-	int ret;
-	struct mmal_buffer *buf;
-	unsigned long flags = 0;
-
-	if (!port->enabled)
-		return -EINVAL;
-
-	/* peek buffer from queue */
-	spin_lock_irqsave(&port->slock, flags);
-	if (list_empty(&port->buffers)) {
-		port->buffer_underflow++;
-		spin_unlock_irqrestore(&port->slock, flags);
-		return -ENOSPC;
-	}
-
-	buf = list_entry(port->buffers.next, struct mmal_buffer, list);
-
-	spin_unlock_irqrestore(&port->slock, flags);
-
-	/* issue buffer to mmal service */
-	ret = buffer_from_host(instance, port, buf);
-	if (ret) {
-		pr_err("adding buffer header failed\n");
-		/* todo: how should this be dealt with */
-	}
 
 	return ret;
 }
@@ -680,9 +565,6 @@ static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
 		    msg->u.buffer_from_host.payload_in_message;
 	}
 
-	/* replace the buffer header */
-	port_buffer_from_host(instance, msg_context->u.bulk.port);
-
 	/* schedule the port callback */
 	schedule_work(&msg_context->u.bulk.work);
 }
@@ -690,13 +572,6 @@ static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
 static void bulk_receive_cb(struct vchiq_mmal_instance *instance,
 			    struct mmal_msg_context *msg_context)
 {
-	/* bulk receive operation complete */
-	mutex_unlock(&msg_context->u.bulk.instance->bulk_mutex);
-
-	/* replace the buffer header */
-	port_buffer_from_host(msg_context->u.bulk.instance,
-			      msg_context->u.bulk.port);
-
 	msg_context->u.bulk.status = 0;
 
 	/* schedule the port callback */
@@ -707,13 +582,6 @@ static void bulk_abort_cb(struct vchiq_mmal_instance *instance,
 			  struct mmal_msg_context *msg_context)
 {
 	pr_err("%s: bulk ABORTED msg_context:%p\n", __func__, msg_context);
-
-	/* bulk receive operation complete */
-	mutex_unlock(&msg_context->u.bulk.instance->bulk_mutex);
-
-	/* replace the buffer header */
-	port_buffer_from_host(msg_context->u.bulk.instance,
-			      msg_context->u.bulk.port);
 
 	msg_context->u.bulk.status = -EINTR;
 
@@ -1482,7 +1350,14 @@ static int port_disable(struct vchiq_mmal_instance *instance,
 	ret = port_action_port(instance, port,
 			       MMAL_MSG_PORT_ACTION_TYPE_DISABLE);
 	if (ret == 0) {
-		/* drain all queued buffers on port */
+		/*
+		 * Drain all queued buffers on port. This should only
+		 * apply to buffers that have been queued before the port
+		 * has been enabled. If the port has been enabled and buffers
+		 * passed, then the buffers should have been removed from this
+		 * list, and we should get the relevant callbacks via VCHIQ
+		 * to release the buffers.
+		 */
 		spin_lock_irqsave(&port->slock, flags);
 
 		list_for_each_safe(buf_head, q, &port->buffers) {
@@ -1511,7 +1386,7 @@ static int port_enable(struct vchiq_mmal_instance *instance,
 		       struct vchiq_mmal_port *port)
 {
 	unsigned int hdr_count;
-	struct list_head *buf_head;
+	struct list_head *q, *buf_head;
 	int ret;
 
 	if (port->enabled)
@@ -1537,7 +1412,7 @@ static int port_enable(struct vchiq_mmal_instance *instance,
 	if (port->buffer_cb) {
 		/* send buffer headers to videocore */
 		hdr_count = 1;
-		list_for_each(buf_head, &port->buffers) {
+		list_for_each_safe(buf_head, q, &port->buffers) {
 			struct mmal_buffer *mmalbuf;
 
 			mmalbuf = list_entry(buf_head, struct mmal_buffer,
@@ -1546,6 +1421,7 @@ static int port_enable(struct vchiq_mmal_instance *instance,
 			if (ret)
 				goto done;
 
+			list_del(buf_head);
 			hdr_count++;
 			if (hdr_count > port->current_buffer.num)
 				break;
@@ -1758,19 +1634,38 @@ int vchiq_mmal_submit_buffer(struct vchiq_mmal_instance *instance,
 			     struct mmal_buffer *buffer)
 {
 	unsigned long flags = 0;
+	int ret;
 
-	spin_lock_irqsave(&port->slock, flags);
-	list_add_tail(&buffer->list, &port->buffers);
-	spin_unlock_irqrestore(&port->slock, flags);
-
-	/* the port previously underflowed because it was missing a
-	 * mmal_buffer which has just been added, submit that buffer
-	 * to the mmal service.
-	 */
-	if (port->buffer_underflow) {
-		port_buffer_from_host(instance, port);
-		port->buffer_underflow--;
+	ret = buffer_from_host(instance, port, buffer);
+	if (ret == -EINVAL) {
+		/* Port is disabled. Queue for when it is enabled. */
+		spin_lock_irqsave(&port->slock, flags);
+		list_add_tail(&buffer->list, &port->buffers);
+		spin_unlock_irqrestore(&port->slock, flags);
 	}
+
+	return 0;
+}
+
+int mmal_vchi_buffer_init(struct vchiq_mmal_instance *instance,
+			  struct mmal_buffer *buf)
+{
+	struct mmal_msg_context *msg_context = get_msg_context(instance);
+
+	if (IS_ERR(msg_context))
+		return (PTR_ERR(msg_context));
+
+	buf->msg_context = msg_context;
+	return 0;
+}
+
+int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf)
+{
+	struct mmal_msg_context *msg_context = buf->msg_context;
+
+	if (msg_context)
+		release_msg_context(msg_context);
+	buf->msg_context = NULL;
 
 	return 0;
 }
@@ -2024,7 +1919,6 @@ int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance)
 		return -ENOMEM;
 
 	mutex_init(&instance->vchiq_mutex);
-	mutex_init(&instance->bulk_mutex);
 
 	instance->bulk_scratch = vmalloc(PAGE_SIZE);
 

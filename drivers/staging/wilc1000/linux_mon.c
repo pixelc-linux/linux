@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/*!
- *  @file	linux_mon.c
- *  @brief	File Operations OS wrapper functionality
- *  @author	mdaftedar
- *  @sa		wilc_wfi_netdevice.h
- *  @date	01 MAR 2012
- *  @version	1.0
- */
 #include "wilc_wfi_cfgoperations.h"
-#include "wilc_wlan_if.h"
-#include "wilc_wlan.h"
 
 struct wilc_wfi_radiotap_hdr {
 	struct ieee80211_radiotap_header hdr;
@@ -27,22 +17,12 @@ static struct net_device *wilc_wfi_mon; /* global monitor netdev */
 
 static u8 srcadd[6];
 static u8 bssid[6];
-static u8 broadcast[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-/**
- *  @brief      WILC_WFI_monitor_rx
- *  @details
- *  @param[in]
- *  @return     int : Return 0 on Success
- *  @author	mdaftedar
- *  @date	12 JUL 2012
- *  @version	1.0
- */
 
 #define IEEE80211_RADIOTAP_F_TX_RTS	0x0004  /* used rts/cts handshake */
 #define IEEE80211_RADIOTAP_F_TX_FAIL	0x0001  /* failed due to excessive*/
 #define GET_PKT_OFFSET(a) (((a) >> 22) & 0x1ff)
 
-void WILC_WFI_monitor_rx(u8 *buff, u32 size)
+void wilc_wfi_monitor_rx(u8 *buff, u32 size)
 {
 	u32 header, pkt_offset;
 	struct sk_buff *skb = NULL;
@@ -162,20 +142,11 @@ static int mon_mgmt_tx(struct net_device *dev, const u8 *buf, size_t len)
 	return 0;
 }
 
-/**
- *  @brief      WILC_WFI_mon_xmit
- *  @details
- *  @param[in]
- *  @return     int : Return 0 on Success
- *  @author	mdaftedar
- *  @date	12 JUL 2012
- *  @version	1.0
- */
-static netdev_tx_t WILC_WFI_mon_xmit(struct sk_buff *skb,
+static netdev_tx_t wilc_wfi_mon_xmit(struct sk_buff *skb,
 				     struct net_device *dev)
 {
 	u32 rtap_len, ret = 0;
-	struct WILC_WFI_mon_priv  *mon_priv;
+	struct wilc_wfi_mon_priv  *mon_priv;
 
 	struct sk_buff *skb2;
 	struct wilc_wfi_radiotap_cb_hdr *cb_hdr;
@@ -192,7 +163,7 @@ static netdev_tx_t WILC_WFI_mon_xmit(struct sk_buff *skb,
 
 	skb_pull(skb, rtap_len);
 
-	if (skb->data[0] == 0xc0 && (!(memcmp(broadcast, &skb->data[4], 6)))) {
+	if (skb->data[0] == 0xc0 && is_broadcast_ether_addr(&skb->data[4])) {
 		skb2 = dev_alloc_skb(skb->len + sizeof(struct wilc_wfi_radiotap_cb_hdr));
 		if (!skb2)
 			return -ENOMEM;
@@ -244,29 +215,20 @@ static netdev_tx_t WILC_WFI_mon_xmit(struct sk_buff *skb,
 }
 
 static const struct net_device_ops wilc_wfi_netdev_ops = {
-	.ndo_start_xmit         = WILC_WFI_mon_xmit,
+	.ndo_start_xmit         = wilc_wfi_mon_xmit,
 
 };
 
-/**
- *  @brief      WILC_WFI_init_mon_interface
- *  @details
- *  @param[in]
- *  @return     Pointer to net_device
- *  @author	mdaftedar
- *  @date	12 JUL 2012
- *  @version	1.0
- */
-struct net_device *WILC_WFI_init_mon_interface(const char *name,
+struct net_device *wilc_wfi_init_mon_interface(const char *name,
 					       struct net_device *real_dev)
 {
-	struct WILC_WFI_mon_priv *priv;
+	struct wilc_wfi_mon_priv *priv;
 
 	/*If monitor interface is already initialized, return it*/
 	if (wilc_wfi_mon)
 		return wilc_wfi_mon;
 
-	wilc_wfi_mon = alloc_etherdev(sizeof(struct WILC_WFI_mon_priv));
+	wilc_wfi_mon = alloc_etherdev(sizeof(struct wilc_wfi_mon_priv));
 	if (!wilc_wfi_mon)
 		return NULL;
 	wilc_wfi_mon->type = ARPHRD_IEEE80211_RADIOTAP;
@@ -287,16 +249,7 @@ struct net_device *WILC_WFI_init_mon_interface(const char *name,
 	return wilc_wfi_mon;
 }
 
-/**
- *  @brief      WILC_WFI_deinit_mon_interface
- *  @details
- *  @param[in]
- *  @return     int : Return 0 on Success
- *  @author	mdaftedar
- *  @date	12 JUL 2012
- *  @version	1.0
- */
-int WILC_WFI_deinit_mon_interface(void)
+int wilc_wfi_deinit_mon_interface(void)
 {
 	bool rollback_lock = false;
 

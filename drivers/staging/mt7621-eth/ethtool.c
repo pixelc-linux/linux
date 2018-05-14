@@ -13,6 +13,7 @@
  */
 
 #include "mtk_eth_soc.h"
+#include "ethtool.h"
 
 static const char mtk_gdma_str[][ETH_GSTRING_LEN] = {
 #define _FE(x...)	# x,
@@ -62,7 +63,6 @@ static int mtk_set_link_ksettings(struct net_device *dev,
 	}
 
 	return phy_ethtool_ksettings_set(mac->phy_dev, cmd);
-
 }
 
 static void mtk_get_drvinfo(struct net_device *dev,

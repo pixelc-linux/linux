@@ -19,6 +19,8 @@
 /** Special value signalling that time is not known */
 #define MMAL_TIME_UNKNOWN (1LL<<63)
 
+struct mmal_msg_context;
+
 /* mapping between v4l and mmal video modes */
 struct mmal_fmt {
 	char  *name;
@@ -28,6 +30,9 @@ struct mmal_fmt {
 	int   depth;
 	u32   mmal_component;  /* MMAL component index to be used to encode */
 	u32   ybbp;            /* depth of first Y plane for planar formats */
+	bool  remove_padding;  /* Does the GPU have to remove padding,
+				* or can we do hide padding via bytesperline.
+				*/
 };
 
 /* buffer for one video frame */
@@ -40,6 +45,8 @@ struct mmal_buffer {
 
 	void *buffer; /* buffer pointer */
 	unsigned long buffer_size; /* size of allocated buffer */
+
+	struct mmal_msg_context *msg_context;
 };
 
 /* */
