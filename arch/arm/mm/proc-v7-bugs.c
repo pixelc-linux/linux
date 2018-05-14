@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <linux/arm-smccc.h>
 #include <linux/kernel.h>
+#include <linux/psci.h>
 #include <linux/smp.h>
 
 #include <asm/cp15.h>
 #include <asm/cputype.h>
+#include <asm/proc-fns.h>
 #include <asm/system_misc.h>
 
 void cpu_v7_bugs_init(void);
@@ -39,6 +42,9 @@ void cpu_v7_ca15_ibe(void)
 #ifdef CONFIG_HARDEN_BRANCH_PREDICTOR
 void (*harden_branch_predictor)(void);
 
+extern void cpu_v7_smc_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm);
+extern void cpu_v7_hvc_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm);
+
 static void harden_branch_predictor_bpiall(void)
 {
 	write_sysreg(0, BPIALL);
@@ -48,6 +54,18 @@ static void harden_branch_predictor_iciallu(void)
 {
 	write_sysreg(0, ICIALLU);
 }
+
+#ifdef CONFIG_ARM_PSCI
+static void call_smc_arch_workaround_1(void)
+{
+	arm_smccc_1_1_smc(ARM_SMCCC_ARCH_WORKAROUND_1, NULL);
+}
+
+static void call_hvc_arch_workaround_1(void)
+{
+	arm_smccc_1_1_hvc(ARM_SMCCC_ARCH_WORKAROUND_1, NULL);
+}
+#endif
 
 void cpu_v7_bugs_init(void)
 {
@@ -73,6 +91,38 @@ void cpu_v7_bugs_init(void)
 		spectre_v2_method = "ICIALLU";
 		break;
 	}
+
+#ifdef CONFIG_ARM_PSCI
+	if (psci_ops.smccc_version != SMCCC_VERSION_1_0) {
+		struct arm_smccc_res res;
+
+		switch (psci_ops.conduit) {
+		case PSCI_CONDUIT_HVC:
+			arm_smccc_1_1_hvc(ARM_SMCCC_ARCH_FEATURES_FUNC_ID,
+					  ARM_SMCCC_ARCH_WORKAROUND_1, &res);
+			if ((int)res.a0 < 0)
+				break;
+			harden_branch_predictor = call_hvc_arch_workaround_1;
+			processor.switch_mm = cpu_v7_hvc_switch_mm;
+			spectre_v2_method = "hypervisor";
+			break;
+
+		case PSCI_CONDUIT_SMC:
+			arm_smccc_1_1_smc(ARM_SMCCC_ARCH_FEATURES_FUNC_ID,
+					  ARM_SMCCC_ARCH_WORKAROUND_1, &res);
+			if ((int)res.a0 < 0)
+				break;
+			harden_branch_predictor = call_smc_arch_workaround_1;
+			processor.switch_mm = cpu_v7_smc_switch_mm;
+			spectre_v2_method = "firmware PSCI";
+			break;
+
+		default:
+			break;
+		}
+	}
+#endif
+
 	if (spectre_v2_method)
 		pr_info("CPU: Spectre v2: using %s workaround\n",
 			spectre_v2_method);
