@@ -16,6 +16,7 @@
  * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
+#include <linux/arm-smccc.h>
 #include <linux/linkage.h>
 #include <asm/kvm_arm.h>
 #include <asm/kvm_asm.h>
@@ -202,7 +203,7 @@ hyp_hvc:
 	lsr     r2, r2, #16
 	and     r2, r2, #0xff
 	cmp     r2, #0
-	bne	guest_trap		@ Guest called HVC
+	bne	guest_hvc_trap		@ Guest called HVC
 
 	/*
 	 * Getting here means host called HVC, we shift parameters and branch
@@ -251,6 +252,16 @@ THUMB(	orr	lr, #1)
 	blx	lr			@ Call the HYP function
 
 	pop	{r2, lr}
+	eret
+
+guest_hvc_trap:
+	movw	ip, #:lower16:ARM_SMCCC_ARCH_WORKAROUND_1
+	movt	ip, #:upper16:ARM_SMCCC_ARCH_WORKAROUND_1
+	ldr	r0, [sp]		@ Guest's r0
+	teq	r0, ip
+	bne	guest_trap
+	pop	{r0, r1, r2}
+	mov	r0, #0
 	eret
 
 guest_trap:
