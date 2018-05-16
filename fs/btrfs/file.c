@@ -1587,6 +1587,7 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 	int ret = 0;
 	bool only_release_metadata = false;
 	bool force_page_uptodate = false;
+	bool relock = false;
 
 	nrptrs = min(DIV_ROUND_UP(iov_iter_count(i), PAGE_SIZE),
 			PAGE_SIZE / (sizeof(struct page *)));
@@ -1595,6 +1596,18 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 	pages = kmalloc_array(nrptrs, sizeof(struct page *), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
+
+	inode_dio_begin(inode);
+
+	/*
+	 * If the write is beyond the EOF, we need update
+	 * the isize, but it is protected by i_mutex. So we can
+	 * not unlock the i_mutex at this case.
+	 */
+	if (pos + iov_iter_count(i) <= i_size_read(inode)) {
+		inode_unlock(inode);
+		relock = true;
+	}
 
 	while (iov_iter_count(i) > 0) {
 		size_t offset = pos & (PAGE_SIZE - 1);
@@ -1795,6 +1808,10 @@ again:
 					release_bytes, true);
 		}
 	}
+
+	inode_dio_end(inode);
+	if (relock)
+		inode_lock(inode);
 
 	extent_changeset_free(data_reserved);
 	return num_written ? num_written : ret;
