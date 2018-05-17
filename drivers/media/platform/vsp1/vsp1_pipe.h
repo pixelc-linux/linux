@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * vsp1_pipe.h  --  R-Car VSP1 Pipeline
  *
  * Copyright (C) 2013-2015 Renesas Electronics Corporation
  *
  * Contact: Laurent Pinchart (laurent.pinchart@ideasonboard.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 #ifndef __VSP1_PIPE_H__
 #define __VSP1_PIPE_H__
@@ -99,7 +95,7 @@ struct vsp1_partition {
  * @num_inputs: number of RPFs
  * @inputs: array of RPFs in the pipeline (indexed by RPF index)
  * @output: WPF at the output of the pipeline
- * @bru: BRU entity, if present
+ * @brx: BRx entity, if present
  * @hgo: HGO entity, if present
  * @hgt: HGT entity, if present
  * @lif: LIF entity, if present
@@ -118,7 +114,7 @@ struct vsp1_pipeline {
 	enum vsp1_pipeline_state state;
 	wait_queue_head_t wq;
 
-	void (*frame_end)(struct vsp1_pipeline *pipe, bool completed);
+	void (*frame_end)(struct vsp1_pipeline *pipe, unsigned int completion);
 
 	struct mutex lock;
 	struct kref kref;
@@ -129,7 +125,7 @@ struct vsp1_pipeline {
 	unsigned int num_inputs;
 	struct vsp1_rwpf *inputs[VSP1_MAX_RPF];
 	struct vsp1_rwpf *output;
-	struct vsp1_entity *bru;
+	struct vsp1_entity *brx;
 	struct vsp1_entity *hgo;
 	struct vsp1_entity *hgt;
 	struct vsp1_entity *lif;

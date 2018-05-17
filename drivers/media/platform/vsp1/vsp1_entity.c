@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * vsp1_entity.c  --  R-Car VSP1 Base Entity
  *
  * Copyright (C) 2013-2014 Renesas Electronics Corporation
  *
  * Contact: Laurent Pinchart (laurent.pinchart@ideasonboard.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/device.h>
@@ -311,6 +307,97 @@ done:
 	return ret;
 }
 
+/*
+ * vsp1_subdev_set_pad_format - Subdev pad set_fmt handler
+ * @subdev: V4L2 subdevice
+ * @cfg: V4L2 subdev pad configuration
+ * @fmt: V4L2 subdev format
+ * @codes: Array of supported media bus codes
+ * @ncodes: Number of supported media bus codes
+ * @min_width: Minimum image width
+ * @min_height: Minimum image height
+ * @max_width: Maximum image width
+ * @max_height: Maximum image height
+ *
+ * This function implements the subdev set_fmt pad operation for entities that
+ * do not support scaling or cropping. It defaults to the first supplied media
+ * bus code if the requested code isn't supported, clamps the size to the
+ * supplied minimum and maximum, and propagates the sink pad format to the
+ * source pad.
+ */
+int vsp1_subdev_set_pad_format(struct v4l2_subdev *subdev,
+			       struct v4l2_subdev_pad_config *cfg,
+			       struct v4l2_subdev_format *fmt,
+			       const unsigned int *codes, unsigned int ncodes,
+			       unsigned int min_width, unsigned int min_height,
+			       unsigned int max_width, unsigned int max_height)
+{
+	struct vsp1_entity *entity = to_vsp1_entity(subdev);
+	struct v4l2_subdev_pad_config *config;
+	struct v4l2_mbus_framefmt *format;
+	struct v4l2_rect *selection;
+	unsigned int i;
+	int ret = 0;
+
+	mutex_lock(&entity->lock);
+
+	config = vsp1_entity_get_pad_config(entity, cfg, fmt->which);
+	if (!config) {
+		ret = -EINVAL;
+		goto done;
+	}
+
+	format = vsp1_entity_get_pad_format(entity, config, fmt->pad);
+
+	if (fmt->pad == entity->source_pad) {
+		/* The output format can't be modified. */
+		fmt->format = *format;
+		goto done;
+	}
+
+	/*
+	 * Default to the first media bus code if the requested format is not
+	 * supported.
+	 */
+	for (i = 0; i < ncodes; ++i) {
+		if (fmt->format.code == codes[i])
+			break;
+	}
+
+	format->code = i < ncodes ? codes[i] : codes[0];
+	format->width = clamp_t(unsigned int, fmt->format.width,
+				min_width, max_width);
+	format->height = clamp_t(unsigned int, fmt->format.height,
+				 min_height, max_height);
+	format->field = V4L2_FIELD_NONE;
+	format->colorspace = V4L2_COLORSPACE_SRGB;
+
+	fmt->format = *format;
+
+	/* Propagate the format to the source pad. */
+	format = vsp1_entity_get_pad_format(entity, config, entity->source_pad);
+	*format = fmt->format;
+
+	/* Reset the crop and compose rectangles */
+	selection = vsp1_entity_get_pad_selection(entity, config, fmt->pad,
+						  V4L2_SEL_TGT_CROP);
+	selection->left = 0;
+	selection->top = 0;
+	selection->width = format->width;
+	selection->height = format->height;
+
+	selection = vsp1_entity_get_pad_selection(entity, config, fmt->pad,
+						  V4L2_SEL_TGT_COMPOSE);
+	selection->left = 0;
+	selection->top = 0;
+	selection->width = format->width;
+	selection->height = format->height;
+
+done:
+	mutex_unlock(&entity->lock);
+	return ret;
+}
+
 /* -----------------------------------------------------------------------------
  * Media Operations
  */
@@ -452,6 +539,10 @@ struct media_pad *vsp1_entity_remote_pad(struct media_pad *pad)
 	{ VSP1_ENTITY_UDS, idx, VI6_DPR_UDS_ROUTE(idx),			\
 	  { VI6_DPR_NODE_UDS(idx) }, VI6_DPR_NODE_UDS(idx) }
 
+#define VSP1_ENTITY_ROUTE_UIF(idx)					\
+	{ VSP1_ENTITY_UIF, idx, VI6_DPR_UIF_ROUTE(idx),			\
+	  { VI6_DPR_NODE_UIF(idx) }, VI6_DPR_NODE_UIF(idx) }
+
 #define VSP1_ENTITY_ROUTE_WPF(idx)					\
 	{ VSP1_ENTITY_WPF, idx, 0,					\
 	  { VI6_DPR_NODE_WPF(idx) }, VI6_DPR_NODE_WPF(idx) }
@@ -480,6 +571,8 @@ static const struct vsp1_route vsp1_routes[] = {
 	VSP1_ENTITY_ROUTE_UDS(0),
 	VSP1_ENTITY_ROUTE_UDS(1),
 	VSP1_ENTITY_ROUTE_UDS(2),
+	VSP1_ENTITY_ROUTE_UIF(0),	/* Named UIF4 in the documentation */
+	VSP1_ENTITY_ROUTE_UIF(1),	/* Named UIF5 in the documentation */
 	VSP1_ENTITY_ROUTE_WPF(0),
 	VSP1_ENTITY_ROUTE_WPF(1),
 	VSP1_ENTITY_ROUTE_WPF(2),
