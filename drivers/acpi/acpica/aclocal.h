@@ -124,7 +124,7 @@ typedef enum {
  * descriptor_type is used to differentiate between internal descriptors.
  *
  * The node is optimized for both 32-bit and 64-bit platforms:
- * 20 bytes for the 32-bit case, 32 bytes for the 64-bit case.
+ * 28 bytes for the 32-bit case, 48 bytes for the 64-bit case.
  *
  * Note: The descriptor_type and Type fields must appear in the identical
  * position in both the struct acpi_namespace_node and union acpi_operand_object
@@ -140,10 +140,12 @@ struct acpi_namespace_node {
 	struct acpi_namespace_node *parent;	/* Parent node */
 	struct acpi_namespace_node *child;	/* First child */
 	struct acpi_namespace_node *peer;	/* First peer */
+	struct acpi_namespace_node *owner_list;	/* All nodes owned by a table or method */
 
-	/*
-	 * The following fields are used by the ASL compiler and disassembler only
-	 */
+/*
+ * The following fields are appended to the namespace node and
+ * are used by the ASL compiler and AML disassembler only
+ */
 #ifdef ACPI_LARGE_NAMESPACE_NODE
 	union acpi_parse_object *op;
 	void *method_locals;
@@ -151,7 +153,6 @@ struct acpi_namespace_node {
 	u32 value;
 	u32 length;
 	u8 arg_count;
-
 #endif
 };
 
