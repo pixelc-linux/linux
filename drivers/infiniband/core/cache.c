@@ -772,8 +772,8 @@ void ib_cache_gid_set_default_gid(struct ib_device *ib_dev, u8 port,
 	}
 }
 
-static int gid_table_reserve_default(struct ib_device *ib_dev, u8 port,
-				     struct ib_gid_table *table)
+static void gid_table_reserve_default(struct ib_device *ib_dev, u8 port,
+				      struct ib_gid_table *table)
 {
 	unsigned int i;
 	unsigned long roce_gid_type_mask;
@@ -783,8 +783,7 @@ static int gid_table_reserve_default(struct ib_device *ib_dev, u8 port,
 	roce_gid_type_mask = roce_gid_type_mask_support(ib_dev, port);
 	num_default_gids = hweight_long(roce_gid_type_mask);
 	for (i = 0; i < num_default_gids && i < table->sz; i++) {
-		struct ib_gid_table_entry *entry =
-			&table->data_vec[i];
+		struct ib_gid_table_entry *entry = &table->data_vec[i];
 
 		entry->props |= GID_TABLE_ENTRY_DEFAULT;
 		current_gid = find_next_bit(&roce_gid_type_mask,
@@ -792,48 +791,8 @@ static int gid_table_reserve_default(struct ib_device *ib_dev, u8 port,
 					    current_gid);
 		entry->attr.gid_type = current_gid++;
 	}
-
-	return 0;
 }
 
-static int _gid_table_setup_one(struct ib_device *ib_dev)
-{
-	u8 port;
-	struct ib_gid_table *table;
-	int err = 0;
-
-	for (port = 0; port < ib_dev->phys_port_cnt; port++) {
-		u8 rdma_port = port + rdma_start_port(ib_dev);
-
-		table =
-			alloc_gid_table(
-				ib_dev->port_immutable[rdma_port].gid_tbl_len);
-		if (!table) {
-			err = -ENOMEM;
-			goto rollback_table_setup;
-		}
-
-		err = gid_table_reserve_default(ib_dev,
-						port + rdma_start_port(ib_dev),
-						table);
-		if (err)
-			goto rollback_table_setup;
-		ib_dev->cache.ports[port].gid = table;
-	}
-
-	return 0;
-
-rollback_table_setup:
-	for (port = 0; port < ib_dev->phys_port_cnt; port++) {
-		table = ib_dev->cache.ports[port].gid;
-
-		cleanup_gid_table_port(ib_dev, port + rdma_start_port(ib_dev),
-				       table);
-		release_gid_table(table);
-	}
-
-	return err;
-}
 
 static void gid_table_release_one(struct ib_device *ib_dev)
 {
@@ -845,6 +804,29 @@ static void gid_table_release_one(struct ib_device *ib_dev)
 		release_gid_table(table);
 		ib_dev->cache.ports[port].gid = NULL;
 	}
+}
+
+static int _gid_table_setup_one(struct ib_device *ib_dev)
+{
+	u8 port;
+	struct ib_gid_table *table;
+
+	for (port = 0; port < ib_dev->phys_port_cnt; port++) {
+		u8 rdma_port = port + rdma_start_port(ib_dev);
+
+		table =	alloc_gid_table(
+				ib_dev->port_immutable[rdma_port].gid_tbl_len);
+		if (!table)
+			goto rollback_table_setup;
+
+		gid_table_reserve_default(ib_dev, rdma_port, table);
+		ib_dev->cache.ports[port].gid = table;
+	}
+	return 0;
+
+rollback_table_setup:
+	gid_table_release_one(ib_dev);
+	return -ENOMEM;
 }
 
 static void gid_table_cleanup_one(struct ib_device *ib_dev)
