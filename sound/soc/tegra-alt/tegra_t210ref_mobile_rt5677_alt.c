@@ -25,7 +25,6 @@
 #include <linux/i2c.h>
 #include <linux/regulator/consumer.h>
 #include <linux/delay.h>
-#include <linux/switch.h>
 #include <linux/pm_runtime.h>
 #include <linux/input.h>
 
@@ -73,7 +72,8 @@ static int tegra_t210ref_dai_init(struct snd_soc_pcm_runtime *rtd,
 	struct snd_soc_card *card = rtd->card;
 	struct tegra_t210ref *machine = snd_soc_card_get_drvdata(card);
 	struct snd_soc_pcm_stream *dai_params;
-	unsigned int idx, mclk, clk_out_rate;
+	struct snd_soc_pcm_runtime *prtd;
+	unsigned int mclk, clk_out_rate;
 	int err, tdm_mask;
 
 	switch (rate) {
@@ -107,12 +107,12 @@ static int tegra_t210ref_dai_init(struct snd_soc_pcm_runtime *rtd,
 		return err;
 	}
 
-	idx = tegra_machine_get_codec_dai_link_idx("rt5677-playback");
+	prtd = snd_soc_get_pcm_runtime(card, "rt5677-playback");
 	/* check if idx has valid number */
-	if (idx != -EINVAL) {
+	if (prtd) {
 		dai_params =
-			(struct snd_soc_pcm_stream *)card->rtd[idx].dai_link->params;
-		err = snd_soc_dai_set_sysclk(card->rtd[idx].codec_dai,
+			(struct snd_soc_pcm_stream *)prtd->dai_link->params;
+		err = snd_soc_dai_set_sysclk(prtd->codec_dai,
 			RT5677_SCLK_S_MCLK, clk_out_rate, SND_SOC_CLOCK_IN);
 		if (err < 0) {
 			dev_err(card->dev, "codec_dai clock not set\n");
@@ -124,17 +124,17 @@ static int tegra_t210ref_dai_init(struct snd_soc_pcm_runtime *rtd,
 		dai_params->channels_min = channels;
 		dai_params->formats = formats;
 
-		err = snd_soc_dai_set_bclk_ratio(card->rtd[idx].cpu_dai,
-		tegra_machine_get_bclk_ratio(&card->rtd[idx]));
+		err = snd_soc_dai_set_bclk_ratio(prtd->cpu_dai,
+		tegra_machine_get_bclk_ratio(prtd));
 		if (err < 0) {
 			dev_err(card->dev, "Can't set cpu dai bclk ratio\n");
 			return err;
 		}
 
 		tdm_mask = (1 << channels) - 1;
-		snd_soc_dai_set_tdm_slot(card->rtd[idx].codec_dai, tdm_mask, tdm_mask,
+		snd_soc_dai_set_tdm_slot(prtd->codec_dai, tdm_mask, tdm_mask,
 			channels, width);
-		snd_soc_dai_set_tdm_slot(card->rtd[idx].cpu_dai, tdm_mask, tdm_mask,
+		snd_soc_dai_set_tdm_slot(prtd->cpu_dai, tdm_mask, tdm_mask,
 			channels, width);
 	}
 
@@ -288,12 +288,12 @@ static const struct snd_soc_dapm_widget tegra_t210ref_dapm_widgets[] = {
 
 static int tegra_t210ref_suspend_pre(struct snd_soc_card *card)
 {
-	unsigned int idx;
+	struct snd_soc_pcm_runtime *rtd;
 
 	/* DAPM dai link stream work for non pcm links */
-	for (idx = 0; idx < card->num_rtd; idx++) {
-		if (card->rtd[idx].dai_link->params)
-			INIT_DELAYED_WORK(&card->rtd[idx].delayed_work, NULL);
+	list_for_each_entry(rtd, &card->rtd_list, list) {
+		if (rtd->dai_link->params)
+			INIT_DELAYED_WORK(&rtd->delayed_work, NULL);
 	}
 
 	return 0;
@@ -326,12 +326,12 @@ static int tegra_t210ref_resume_pre(struct snd_soc_card *card)
 static int tegra_rt5677_headset_init(struct snd_soc_pcm_runtime *runtime)
 {
 	struct snd_soc_card *card = runtime->card;
-	struct snd_soc_codec *codec = runtime->codec;
+	struct snd_soc_dai *codec_dai = runtime->codec_dai;
 	struct tegra_t210ref *machine = snd_soc_card_get_drvdata(card);
 	struct snd_soc_jack *jack;
 	int ret;
 
-	snd_soc_codec_set_sysclk(codec, NAU8825_CLK_MCLK, 0, 0, SND_SOC_CLOCK_IN);
+	snd_soc_dai_set_sysclk(codec_dai, NAU8825_CLK_MCLK, 0, SND_SOC_CLOCK_IN);
 
 	/* Enable Headset and 4 Buttons Jack detection */
 	ret = snd_soc_card_jack_new(card, "Headset Jack",
@@ -350,7 +350,7 @@ static int tegra_rt5677_headset_init(struct snd_soc_pcm_runtime *runtime)
 	snd_jack_set_key(jack->jack, SND_JACK_BTN_1, KEY_VOICECOMMAND);
 	snd_jack_set_key(jack->jack, SND_JACK_BTN_2, KEY_VOLUMEUP);
 	snd_jack_set_key(jack->jack, SND_JACK_BTN_3, KEY_VOLUMEDOWN);
-	nau8825_enable_jack_detect(codec, jack);
+	nau8825_enable_jack_detect(codec_dai->component, jack);
 
 	return 0;
 }
@@ -428,7 +428,6 @@ static int tegra_t210ref_driver_probe(struct platform_device *pdev)
 	struct snd_soc_codec_conf *tegra_machine_codec_conf = NULL;
 	struct snd_soc_codec_conf *tegra_t210ref_codec_conf = NULL;
 	struct tegra_asoc_platform_data *pdata = NULL;
-	struct snd_soc_codec *codec = NULL;
 	int ret = 0, i, idx;
 
 	if (!np) {
@@ -576,8 +575,6 @@ static int tegra_t210ref_driver_probe(struct platform_device *pdev)
 	/* check if idx has valid number */
 	if (idx == -EINVAL)
 		return idx;
-
-	codec = card->rtd[idx].codec;
 
 	return 0;
 
