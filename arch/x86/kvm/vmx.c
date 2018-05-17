@@ -481,7 +481,8 @@ struct nested_vmx {
 	bool sync_shadow_vmcs;
 	bool dirty_vmcs12;
 
-	bool change_vmcs01_virtual_x2apic_mode;
+	bool change_vmcs01_virtual_apic_mode;
+
 	/* L2 must run next, and mustn't decide to exit to L1. */
 	bool nested_run_pending;
 
@@ -1089,6 +1090,16 @@ static inline u16 evmcs_read16(unsigned long field)
 	return *(u16 *)((char *)current_evmcs + offset);
 }
 
+static inline void evmcs_touch_msr_bitmap(void)
+{
+	if (unlikely(!current_evmcs))
+		return;
+
+	if (current_evmcs->hv_enlightenments_control.msr_bitmap)
+		current_evmcs->hv_clean_fields &=
+			~HV_VMX_ENLIGHTENED_CLEAN_FIELD_MSR_BITMAP;
+}
+
 static void evmcs_load(u64 phys_addr)
 {
 	struct hv_vp_assist_page *vp_ap =
@@ -1173,6 +1184,7 @@ static inline u32 evmcs_read32(unsigned long field) { return 0; }
 static inline u16 evmcs_read16(unsigned long field) { return 0; }
 static inline void evmcs_load(u64 phys_addr) {}
 static inline void evmcs_sanitize_exec_ctrls(struct vmcs_config *vmcs_conf) {}
+static inline void evmcs_touch_msr_bitmap(void) {}
 #endif /* IS_ENABLED(CONFIG_HYPERV) */
 
 static inline bool is_exception_n(u32 intr_info, u8 vector)
@@ -4219,6 +4231,14 @@ static int alloc_loaded_vmcs(struct loaded_vmcs *loaded_vmcs)
 		if (!loaded_vmcs->msr_bitmap)
 			goto out_vmcs;
 		memset(loaded_vmcs->msr_bitmap, 0xff, PAGE_SIZE);
+
+		if (static_branch_unlikely(&enable_evmcs) &&
+		    (ms_hyperv.nested_features & HV_X64_NESTED_MSR_BITMAP)) {
+			struct hv_enlightened_vmcs *evmcs =
+				(struct hv_enlightened_vmcs *)loaded_vmcs->vmcs;
+
+			evmcs->hv_enlightenments_control.msr_bitmap = 1;
+		}
 	}
 	return 0;
 
@@ -5332,6 +5352,9 @@ static void __always_inline vmx_disable_intercept_for_msr(unsigned long *msr_bit
 	if (!cpu_has_vmx_msr_bitmap())
 		return;
 
+	if (static_branch_unlikely(&enable_evmcs))
+		evmcs_touch_msr_bitmap();
+
 	/*
 	 * See Intel PRM Vol. 3, 20.6.9 (MSR-Bitmap Address). Early manuals
 	 * have the write-low and read-high bitmap offsets the wrong way round.
@@ -5366,6 +5389,9 @@ static void __always_inline vmx_enable_intercept_for_msr(unsigned long *msr_bitm
 
 	if (!cpu_has_vmx_msr_bitmap())
 		return;
+
+	if (static_branch_unlikely(&enable_evmcs))
+		evmcs_touch_msr_bitmap();
 
 	/*
 	 * See Intel PRM Vol. 3, 20.6.9 (MSR-Bitmap Address). Early manuals
@@ -8845,11 +8871,13 @@ static bool nested_vmx_exit_reflected(struct kvm_vcpu *vcpu, u32 exit_reason)
 	case EXIT_REASON_TPR_BELOW_THRESHOLD:
 		return nested_cpu_has(vmcs12, CPU_BASED_TPR_SHADOW);
 	case EXIT_REASON_APIC_ACCESS:
-		return nested_cpu_has2(vmcs12,
-			SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES);
 	case EXIT_REASON_APIC_WRITE:
 	case EXIT_REASON_EOI_INDUCED:
-		/* apic_write and eoi_induced should exit unconditionally. */
+		/*
+		 * The controls for "virtualize APIC accesses," "APIC-
+		 * register virtualization," and "virtual-interrupt
+		 * delivery" only come from vmcs12.
+		 */
 		return true;
 	case EXIT_REASON_EPT_VIOLATION:
 		/*
@@ -9256,31 +9284,43 @@ static void update_cr8_intercept(struct kvm_vcpu *vcpu, int tpr, int irr)
 	vmcs_write32(TPR_THRESHOLD, irr);
 }
 
-static void vmx_set_virtual_x2apic_mode(struct kvm_vcpu *vcpu, bool set)
+static void vmx_set_virtual_apic_mode(struct kvm_vcpu *vcpu)
 {
 	u32 sec_exec_control;
 
+	if (!lapic_in_kernel(vcpu))
+		return;
+
 	/* Postpone execution until vmcs01 is the current VMCS. */
 	if (is_guest_mode(vcpu)) {
-		to_vmx(vcpu)->nested.change_vmcs01_virtual_x2apic_mode = true;
+		to_vmx(vcpu)->nested.change_vmcs01_virtual_apic_mode = true;
 		return;
 	}
-
-	if (!cpu_has_vmx_virtualize_x2apic_mode())
-		return;
 
 	if (!cpu_need_tpr_shadow(vcpu))
 		return;
 
 	sec_exec_control = vmcs_read32(SECONDARY_VM_EXEC_CONTROL);
+	sec_exec_control &= ~(SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES |
+			      SECONDARY_EXEC_VIRTUALIZE_X2APIC_MODE);
 
-	if (set) {
-		sec_exec_control &= ~SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES;
-		sec_exec_control |= SECONDARY_EXEC_VIRTUALIZE_X2APIC_MODE;
-	} else {
-		sec_exec_control &= ~SECONDARY_EXEC_VIRTUALIZE_X2APIC_MODE;
-		sec_exec_control |= SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES;
-		vmx_flush_tlb(vcpu, true);
+	switch (kvm_get_apic_mode(vcpu)) {
+	case LAPIC_MODE_INVALID:
+		WARN_ONCE(true, "Invalid local APIC state");
+	case LAPIC_MODE_DISABLED:
+		break;
+	case LAPIC_MODE_XAPIC:
+		if (flexpriority_enabled) {
+			sec_exec_control |=
+				SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES;
+			vmx_flush_tlb(vcpu, true);
+		}
+		break;
+	case LAPIC_MODE_X2APIC:
+		if (cpu_has_vmx_virtualize_x2apic_mode())
+			sec_exec_control |=
+				SECONDARY_EXEC_VIRTUALIZE_X2APIC_MODE;
+		break;
 	}
 	vmcs_write32(SECONDARY_VM_EXEC_CONTROL, sec_exec_control);
 
@@ -9289,24 +9329,7 @@ static void vmx_set_virtual_x2apic_mode(struct kvm_vcpu *vcpu, bool set)
 
 static void vmx_set_apic_access_page_addr(struct kvm_vcpu *vcpu, hpa_t hpa)
 {
-	struct vcpu_vmx *vmx = to_vmx(vcpu);
-
-	/*
-	 * Currently we do not handle the nested case where L2 has an
-	 * APIC access page of its own; that page is still pinned.
-	 * Hence, we skip the case where the VCPU is in guest mode _and_
-	 * L1 prepared an APIC access page for L2.
-	 *
-	 * For the case where L1 and L2 share the same APIC access page
-	 * (flexpriority=Y but SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES clear
-	 * in the vmcs12), this function will only update either the vmcs01
-	 * or the vmcs02.  If the former, the vmcs02 will be updated by
-	 * prepare_vmcs02.  If the latter, the vmcs01 will be updated in
-	 * the next L2->L1 exit.
-	 */
-	if (!is_guest_mode(vcpu) ||
-	    !nested_cpu_has2(get_vmcs12(&vmx->vcpu),
-			     SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES)) {
+	if (!is_guest_mode(vcpu)) {
 		vmcs_write64(APIC_ACCESS_ADDR, hpa);
 		vmx_flush_tlb(vcpu, true);
 	}
@@ -10380,11 +10403,6 @@ static void nested_get_vmcs12_pages(struct kvm_vcpu *vcpu,
 			vmcs_clear_bits(SECONDARY_VM_EXEC_CONTROL,
 					SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES);
 		}
-	} else if (!(nested_cpu_has_virt_x2apic_mode(vmcs12)) &&
-		   cpu_need_virtualize_apic_accesses(&vmx->vcpu)) {
-		vmcs_set_bits(SECONDARY_VM_EXEC_CONTROL,
-			      SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES);
-		kvm_vcpu_reload_apic_access_page(vcpu);
 	}
 
 	if (nested_cpu_has(vmcs12, CPU_BASED_TPR_SHADOW)) {
@@ -12062,10 +12080,9 @@ static void nested_vmx_vmexit(struct kvm_vcpu *vcpu, u32 exit_reason,
 	if (kvm_has_tsc_control)
 		decache_tsc_multiplier(vmx);
 
-	if (vmx->nested.change_vmcs01_virtual_x2apic_mode) {
-		vmx->nested.change_vmcs01_virtual_x2apic_mode = false;
-		vmx_set_virtual_x2apic_mode(vcpu,
-				vcpu->arch.apic_base & X2APIC_ENABLE);
+	if (vmx->nested.change_vmcs01_virtual_apic_mode) {
+		vmx->nested.change_vmcs01_virtual_apic_mode = false;
+		vmx_set_virtual_apic_mode(vcpu);
 	} else if (!nested_cpu_has_ept(vmcs12) &&
 		   nested_cpu_has2(vmcs12,
 				   SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES)) {
@@ -12693,7 +12710,7 @@ static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
 	.enable_nmi_window = enable_nmi_window,
 	.enable_irq_window = enable_irq_window,
 	.update_cr8_intercept = update_cr8_intercept,
-	.set_virtual_x2apic_mode = vmx_set_virtual_x2apic_mode,
+	.set_virtual_apic_mode = vmx_set_virtual_apic_mode,
 	.set_apic_access_page_addr = vmx_set_apic_access_page_addr,
 	.get_enable_apicv = vmx_get_enable_apicv,
 	.refresh_apicv_exec_ctrl = vmx_refresh_apicv_exec_ctrl,
