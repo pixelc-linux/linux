@@ -148,8 +148,11 @@ static void smc_lgr_free_work(struct work_struct *work)
 	list_del_init(&lgr->list); /* remove from smc_lgr_list */
 free:
 	spin_unlock_bh(&smc_lgr_list.lock);
-	if (!delayed_work_pending(&lgr->free_work))
+	if (!delayed_work_pending(&lgr->free_work)) {
+		if (lgr->lnk[SMC_SINGLE_LINK].state != SMC_LNK_INACTIVE)
+			smc_llc_link_inactive(&lgr->lnk[SMC_SINGLE_LINK]);
 		smc_lgr_free(lgr);
+	}
 }
 
 /* create a new SMC link group */
@@ -169,7 +172,7 @@ static int smc_lgr_create(struct smc_sock *smc,
 		goto out;
 	}
 	lgr->role = smc->listen_smc ? SMC_SERV : SMC_CLNT;
-	lgr->sync_err = false;
+	lgr->sync_err = 0;
 	memcpy(lgr->peer_systemid, peer_systemid, SMC_SYSTEMID_LEN);
 	lgr->vlan_id = vlan_id;
 	rwlock_init(&lgr->sndbufs_lock);
@@ -194,9 +197,12 @@ static int smc_lgr_create(struct smc_sock *smc,
 		smc_ib_setup_per_ibdev(smcibdev);
 	get_random_bytes(rndvec, sizeof(rndvec));
 	lnk->psn_initial = rndvec[0] + (rndvec[1] << 8) + (rndvec[2] << 16);
-	rc = smc_wr_alloc_link_mem(lnk);
+	rc = smc_llc_link_init(lnk);
 	if (rc)
 		goto free_lgr;
+	rc = smc_wr_alloc_link_mem(lnk);
+	if (rc)
+		goto clear_llc_lnk;
 	rc = smc_ib_create_protection_domain(lnk);
 	if (rc)
 		goto free_link_mem;
@@ -206,10 +212,6 @@ static int smc_lgr_create(struct smc_sock *smc,
 	rc = smc_wr_create_link(lnk);
 	if (rc)
 		goto destroy_qp;
-	init_completion(&lnk->llc_confirm);
-	init_completion(&lnk->llc_confirm_resp);
-	init_completion(&lnk->llc_add);
-	init_completion(&lnk->llc_add_resp);
 
 	smc->conn.lgr = lgr;
 	rwlock_init(&lgr->conns_lock);
@@ -224,6 +226,8 @@ dealloc_pd:
 	smc_ib_dealloc_protection_domain(lnk);
 free_link_mem:
 	smc_wr_free_link_mem(lnk);
+clear_llc_lnk:
+	smc_llc_link_clear(lnk);
 free_lgr:
 	kfree(lgr);
 out:
@@ -269,6 +273,7 @@ void smc_conn_free(struct smc_connection *conn)
 static void smc_link_clear(struct smc_link *lnk)
 {
 	lnk->peer_qpn = 0;
+	smc_llc_link_clear(lnk);
 	smc_ib_modify_qp_reset(lnk);
 	smc_wr_free_link(lnk);
 	smc_ib_destroy_queue_pair(lnk);
@@ -290,8 +295,8 @@ static void smc_buf_free(struct smc_buf_desc *buf_desc, struct smc_link *lnk,
 				    DMA_TO_DEVICE);
 	}
 	sg_free_table(&buf_desc->sgt[SMC_SINGLE_LINK]);
-	if (buf_desc->cpu_addr)
-		free_pages((unsigned long)buf_desc->cpu_addr, buf_desc->order);
+	if (buf_desc->pages)
+		__free_pages(buf_desc->pages, buf_desc->order);
 	kfree(buf_desc);
 }
 
@@ -347,7 +352,11 @@ void smc_lgr_terminate(struct smc_link_group *lgr)
 	struct smc_sock *smc;
 	struct rb_node *node;
 
+	if (lgr->terminating)
+		return;	/* lgr already terminating */
+	lgr->terminating = 1;
 	smc_lgr_forget(lgr);
+	smc_llc_link_inactive(&lgr->lnk[SMC_SINGLE_LINK]);
 
 	write_lock_bh(&lgr->conns_lock);
 	node = rb_first(&lgr->conns_all);
@@ -374,7 +383,8 @@ void smc_lgr_terminate(struct smc_link_group *lgr)
 static int smc_vlan_by_tcpsk(struct socket *clcsock, unsigned short *vlan_id)
 {
 	struct dst_entry *dst = sk_dst_get(clcsock->sk);
-	int rc = 0;
+	struct net_device *ndev;
+	int i, nest_lvl, rc = 0;
 
 	*vlan_id = 0;
 	if (!dst) {
@@ -386,8 +396,27 @@ static int smc_vlan_by_tcpsk(struct socket *clcsock, unsigned short *vlan_id)
 		goto out_rel;
 	}
 
-	if (is_vlan_dev(dst->dev))
-		*vlan_id = vlan_dev_vlan_id(dst->dev);
+	ndev = dst->dev;
+	if (is_vlan_dev(ndev)) {
+		*vlan_id = vlan_dev_vlan_id(ndev);
+		goto out_rel;
+	}
+
+	rtnl_lock();
+	nest_lvl = dev_get_nest_level(ndev);
+	for (i = 0; i < nest_lvl; i++) {
+		struct list_head *lower = &ndev->adj_list.lower;
+
+		if (list_empty(lower))
+			break;
+		lower = lower->next;
+		ndev = (struct net_device *)netdev_lower_get_next(ndev, &lower);
+		if (is_vlan_dev(ndev)) {
+			*vlan_id = vlan_dev_vlan_id(ndev);
+			break;
+		}
+	}
+	rtnl_unlock();
 
 out_rel:
 	dst_release(dst);
@@ -544,16 +573,16 @@ static struct smc_buf_desc *smc_new_buf_create(struct smc_link_group *lgr,
 	if (!buf_desc)
 		return ERR_PTR(-ENOMEM);
 
-	buf_desc->cpu_addr =
-		(void *)__get_free_pages(GFP_KERNEL | __GFP_NOWARN |
-					 __GFP_NOMEMALLOC |
-					 __GFP_NORETRY | __GFP_ZERO,
-					 get_order(bufsize));
-	if (!buf_desc->cpu_addr) {
+	buf_desc->order = get_order(bufsize);
+	buf_desc->pages = alloc_pages(GFP_KERNEL | __GFP_NOWARN |
+				      __GFP_NOMEMALLOC | __GFP_COMP |
+				      __GFP_NORETRY | __GFP_ZERO,
+				      buf_desc->order);
+	if (!buf_desc->pages) {
 		kfree(buf_desc);
 		return ERR_PTR(-EAGAIN);
 	}
-	buf_desc->order = get_order(bufsize);
+	buf_desc->cpu_addr = (void *)page_address(buf_desc->pages);
 
 	/* build the sg table from the pages */
 	lnk = &lgr->lnk[SMC_SINGLE_LINK];
