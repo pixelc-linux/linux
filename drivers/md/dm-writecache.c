@@ -28,14 +28,6 @@
 #define AUTOCOMMIT_BLOCKS_PMEM		64
 #define AUTOCOMMIT_MSEC			1000
 
-/*
- * If the architecture doesn't support persistent memory, we can use this driver
- * in SSD-only mode.
- */
-#ifndef CONFIG_ARCH_HAS_PMEM_API
-#define DM_WRITECACHE_ONLY_SSD
-#endif
-
 #define BITMAP_GRANULARITY	65536
 #if BITMAP_GRANULARITY < PAGE_SIZE
 #undef BITMAP_GRANULARITY
@@ -96,7 +88,7 @@ static void pmem_commit(void)
 
 #endif
 
-#if defined(__HAVE_ARCH_MEMCPY_MCSAFE) && !defined(DM_WRITECACHE_ONLY_SSD)
+#if defined(__HAVE_ARCH_MEMCPY_MCSAFE) && defined(CONFIG_ARCH_HAS_PMEM_API)
 #define DM_WRITECACHE_HANDLE_HARDWARE_ERRORS
 #endif
 
@@ -143,20 +135,14 @@ struct wc_entry {
 #endif
 };
 
-#ifndef DM_WRITECACHE_ONLY_SSD
 #define WC_MODE_PMEM(wc)			((wc)->pmem_mode)
 #define WC_MODE_FUA(wc)				((wc)->writeback_fua)
-#else
-#define WC_MODE_PMEM(wc)			false
-#define WC_MODE_FUA(wc)				false
-#endif
 #define WC_MODE_SORT_FREELIST(wc)		(!WC_MODE_PMEM(wc))
 
 struct dm_writecache {
-#ifndef DM_WRITECACHE_ONLY_SSD
 	bool pmem_mode;
 	bool writeback_fua;
-#endif
+
 	struct mutex lock;
 	struct rb_root tree;
 	struct list_head lru;
@@ -1909,14 +1895,16 @@ static int writecache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 		goto bad_arguments;
 
 	if (!strcasecmp(string, "s")) {
-#ifndef DM_WRITECACHE_ONLY_SSD
 		wc->pmem_mode = false;
-#endif
 	} else if (!strcasecmp(string, "p")) {
-#ifndef DM_WRITECACHE_ONLY_SSD
+#ifdef CONFIG_ARCH_HAS_PMEM_API
 		wc->pmem_mode = true;
 		wc->writeback_fua = true;
 #else
+		/*
+		 * If the architecture doesn't support persistent memory, this
+		 * driver can only be used in SSD-only mode.
+		 */
 		r = -EOPNOTSUPP;
 		ti->error = "Persistent memory not supported on this architecture";
 		goto bad;
@@ -2040,17 +2028,13 @@ static int writecache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 			wc->autocommit_time_set = true;
 		} else if (!strcasecmp(string, "fua")) {
 			if (WC_MODE_PMEM(wc)) {
-#ifndef DM_WRITECACHE_ONLY_SSD
 				wc->writeback_fua = true;
 				wc->writeback_fua_set = true;
-#endif
 			} else goto invalid_optional;
 		} else if (!strcasecmp(string, "nofua")) {
 			if (WC_MODE_PMEM(wc)) {
-#ifndef DM_WRITECACHE_ONLY_SSD
 				wc->writeback_fua = false;
 				wc->writeback_fua_set = true;
-#endif
 			} else goto invalid_optional;
 		} else {
 invalid_optional:
@@ -2254,10 +2238,9 @@ static void writecache_status(struct dm_target *ti, status_type_t type,
 			extra_args += 2;
 		if (wc->autocommit_time_set)
 			extra_args += 2;
-#ifndef DM_WRITECACHE_ONLY_SSD
 		if (wc->writeback_fua_set)
 			extra_args++;
-#endif
+
 		DMEMIT("%u", extra_args);
 		if (wc->high_wm_percent_set) {
 			x = (uint64_t)wc->freelist_high_watermark * 100;
@@ -2280,11 +2263,9 @@ static void writecache_status(struct dm_target *ti, status_type_t type,
 		if (wc->autocommit_time_set) {
 			DMEMIT(" autocommit_time %u", jiffies_to_msecs(wc->autocommit_jiffies));
 		}
-#ifndef DM_WRITECACHE_ONLY_SSD
 		if (wc->writeback_fua_set) {
 			DMEMIT(" %sfua", wc->writeback_fua ? "" : "no");
 		}
-#endif
 		break;
 	}
 }
