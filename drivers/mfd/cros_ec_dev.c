@@ -432,8 +432,8 @@ static int ec_device_probe(struct platform_device *pdev)
 		goto failed;
 	}
 
-	if (cros_ec_debugfs_init(ec))
-		dev_warn(dev, "failed to create debugfs directory\n");
+//	if (cros_ec_debugfs_init(ec))
+//		dev_warn(dev, "failed to create debugfs directory\n");
 
 	return 0;
 
@@ -449,7 +449,7 @@ static int ec_device_remove(struct platform_device *pdev)
 	/* Let the EC take over the lightbar again. */
 	lb_manual_suspend_ctrl(ec, 0);
 
-	cros_ec_debugfs_remove(ec);
+//	cros_ec_debugfs_remove(ec);
 
 	cdev_del(&ec->cdev);
 	device_unregister(&ec->class_dev);
