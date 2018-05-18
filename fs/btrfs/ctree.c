@@ -2633,20 +2633,23 @@ static struct extent_buffer *btrfs_search_slot_get_root(struct btrfs_root *root,
 		goto out;
 	}
 
-	/*
-	 * we don't know the level of the root node until we actually
-	 * have it read locked
-	 */
-	b = btrfs_read_lock_root_node(root);
-	level = btrfs_header_level(b);
-	if (level > write_lock_level)
-		goto out;
+	if (write_lock_level < BTRFS_MAX_LEVEL) {
+		/*
+		 * we don't know the level of the root node until we actually
+		 * have it read locked
+		 */
+		b = btrfs_read_lock_root_node(root);
+		level = btrfs_header_level(b);
+		if (level > write_lock_level)
+			goto out;
 
-	/*
-	 * whoops, must trade for write lock
-	 */
-	btrfs_tree_read_unlock(b);
-	free_extent_buffer(b);
+		/*
+		 * whoops, must trade for write lock
+		 */
+		btrfs_tree_read_unlock(b);
+		free_extent_buffer(b);
+	}
+
 	b = btrfs_lock_root_node(root);
 	root_lock = BTRFS_WRITE_LOCK;
 	/*
