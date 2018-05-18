@@ -176,6 +176,7 @@ struct smb_rqst {
 	struct kvec	*rq_iov;	/* array of kvecs */
 	unsigned int	rq_nvec;	/* number of kvecs in array */
 	struct page	**rq_pages;	/* pointer to array of page ptrs */
+	unsigned int	rq_offset;	/* the offset to the 1st page */
 	unsigned int	rq_npages;	/* number pages in array */
 	unsigned int	rq_pagesz;	/* page size to use */
 	unsigned int	rq_tailsz;	/* length of last page */
@@ -1172,8 +1173,10 @@ struct cifs_readdata {
 	struct kvec			iov[2];
 #ifdef CONFIG_CIFS_SMB_DIRECT
 	struct smbd_mr			*mr;
+	struct page			**direct_pages;
 #endif
 	unsigned int			pagesz;
+	unsigned int			page_offset;
 	unsigned int			tailsz;
 	unsigned int			credits;
 	unsigned int			nr_pages;
@@ -1197,8 +1200,10 @@ struct cifs_writedata {
 	int				result;
 #ifdef CONFIG_CIFS_SMB_DIRECT
 	struct smbd_mr			*mr;
+	struct page			**direct_pages;
 #endif
 	unsigned int			pagesz;
+	unsigned int			page_offset;
 	unsigned int			tailsz;
 	unsigned int			credits;
 	unsigned int			nr_pages;
