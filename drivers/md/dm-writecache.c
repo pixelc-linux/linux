@@ -140,11 +140,7 @@ struct wc_entry {
 #define WC_MODE_SORT_FREELIST(wc)		(!WC_MODE_PMEM(wc))
 
 struct dm_writecache {
-	bool pmem_mode;
-	bool writeback_fua;
-
 	struct mutex lock;
-	struct rb_root tree;
 	struct list_head lru;
 	union {
 		struct list_head freelist;
@@ -153,16 +149,25 @@ struct dm_writecache {
 			struct wc_entry *current_free;
 		};
 	};
+	struct rb_root tree;
+
 	size_t freelist_size;
 	size_t writeback_size;
+	size_t freelist_high_watermark;
+	size_t freelist_low_watermark;
+
 	unsigned uncommitted_blocks;
 	unsigned autocommit_blocks;
 	unsigned max_writeback_jobs;
-	size_t freelist_high_watermark;
-	size_t freelist_low_watermark;
-	struct timer_list autocommit_timer;
+
+	int error;
+
 	unsigned long autocommit_jiffies;
+	struct timer_list autocommit_timer;
 	struct swait_queue_head freelist_wait;
+
+	atomic_t bio_in_progress[2];
+	struct swait_queue_head bio_in_progress_wait[2];
 
 	struct dm_target *ti;
 	struct dm_dev *dev;
@@ -170,34 +175,41 @@ struct dm_writecache {
 	void *memory_map;
 	uint64_t memory_map_size;
 	size_t metadata_sectors;
+	size_t n_blocks;
+	uint64_t seq_count;
 	void *block_start;
 	struct wc_entry *entries;
 	unsigned block_size;
 	unsigned char block_size_bits;
-	size_t n_blocks;
-	uint64_t seq_count;
-	int error;
 
-	bool overwrote_committed;
-	bool memory_vmapped;
+	bool pmem_mode:1;
+	bool writeback_fua:1;
 
-	atomic_t bio_in_progress[2];
-	struct swait_queue_head bio_in_progress_wait[2];
+	bool overwrote_committed:1;
+	bool memory_vmapped:1;
 
-	struct dm_io_client *dm_io;
+	bool high_wm_percent_set:1;
+	bool low_wm_percent_set:1;
+	bool max_writeback_jobs_set:1;
+	bool autocommit_blocks_set:1;
+	bool autocommit_time_set:1;
+	bool writeback_fua_set:1;
+	bool flush_on_suspend:1;
 
 	unsigned writeback_all;
 	struct workqueue_struct *writeback_wq;
 	struct work_struct writeback_work;
 	struct work_struct flush_work;
 
+	struct dm_io_client *dm_io;
+
 	struct swait_queue_head endio_thread_wait;
 	struct list_head endio_list;
 	struct task_struct *endio_thread;
 
 	struct task_struct *flush_thread;
-	struct bio *flush_bio;
 	struct completion flush_completion;
+	struct bio *flush_bio;
 
 	struct bio_set *bio_set;
 	mempool_t *copy_pool;
@@ -205,14 +217,6 @@ struct dm_writecache {
 	struct dm_kcopyd_client *dm_kcopyd;
 	unsigned long *dirty_bitmap;
 	unsigned dirty_bitmap_size;
-
-	bool high_wm_percent_set;
-	bool low_wm_percent_set;
-	bool max_writeback_jobs_set;
-	bool autocommit_blocks_set;
-	bool autocommit_time_set;
-	bool writeback_fua_set;
-	bool flush_on_suspend;
 };
 
 #define WB_LIST_INLINE		16
