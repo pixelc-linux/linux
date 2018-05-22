@@ -2702,6 +2702,7 @@ static void btrfs_qgroup_rescan_worker(struct btrfs_work *work)
 	 * should be recorded by qgroup
 	 */
 	path->search_commit_root = 1;
+	path->skip_locking = 1;
 
 	err = 0;
 	while (!err && !btrfs_fs_closing(fs_info)) {
