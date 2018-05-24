@@ -18,7 +18,7 @@
 	name:
 
 #if defined(CONFIG_X86_64) || defined(CONFIG_X86_ALIGNMENT_16)
-#define __ALIGN		.p2align 4, 0x90
+#define __ALIGN		.p2align 4, 0xCC
 #define __ALIGN_STR	__stringify(__ALIGN)
 #endif
 

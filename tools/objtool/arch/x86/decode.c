@@ -419,6 +419,11 @@ int arch_decode_instruction(struct elf *elf, struct section *sec,
 
 		break;
 
+	case 0xcc:
+		/* int3: used for asm function padding by the __ALIGN macro */
+		*type = INSN_NOP;
+		break;
+
 	case 0xe3:
 		/* jecxz/jrcxz */
 		*type = INSN_JUMP_CONDITIONAL;
