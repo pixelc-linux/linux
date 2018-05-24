@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * vsp1_rpf.c  --  R-Car VSP1 Read Pixel Formatter
  *
  * Copyright (C) 2013-2014 Renesas Electronics Corporation
  *
  * Contact: Laurent Pinchart (laurent.pinchart@ideasonboard.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/device.h>
@@ -167,12 +163,12 @@ static void rpf_configure(struct vsp1_entity *entity,
 	vsp1_rpf_write(rpf, dl, VI6_RPF_DSWAP, fmtinfo->swap);
 
 	/* Output location */
-	if (pipe->bru) {
+	if (pipe->brx) {
 		const struct v4l2_rect *compose;
 
-		compose = vsp1_entity_get_pad_selection(pipe->bru,
-							pipe->bru->config,
-							rpf->bru_input,
+		compose = vsp1_entity_get_pad_selection(pipe->brx,
+							pipe->brx->config,
+							rpf->brx_input,
 							V4L2_SEL_TGT_COMPOSE);
 		left = compose->left;
 		top = compose->top;
@@ -191,10 +187,10 @@ static void rpf_configure(struct vsp1_entity *entity,
 	 * alpha channel by a fixed global alpha value, and multiply the pixel
 	 * components to convert the input to premultiplied alpha.
 	 *
-	 * As alpha premultiplication is available in the BRU for both Gen2 and
+	 * As alpha premultiplication is available in the BRx for both Gen2 and
 	 * Gen3 we handle it there and use the Gen3 alpha multiplier for global
 	 * alpha multiplication only. This however prevents conversion to
-	 * premultiplied alpha if no BRU is present in the pipeline. If that use
+	 * premultiplied alpha if no BRx is present in the pipeline. If that use
 	 * case turns out to be useful we will revisit the implementation (for
 	 * Gen3 only).
 	 *

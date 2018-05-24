@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * vsp1_entity.h  --  R-Car VSP1 Base Entity
  *
  * Copyright (C) 2013-2014 Renesas Electronics Corporation
  *
  * Contact: Laurent Pinchart (laurent.pinchart@ideasonboard.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 #ifndef __VSP1_ENTITY_H__
 #define __VSP1_ENTITY_H__
@@ -37,6 +33,7 @@ enum vsp1_entity_type {
 	VSP1_ENTITY_RPF,
 	VSP1_ENTITY_SRU,
 	VSP1_ENTITY_UDS,
+	VSP1_ENTITY_UIF,
 	VSP1_ENTITY_WPF,
 };
 
@@ -106,6 +103,8 @@ struct vsp1_entity {
 	unsigned int index;
 	const struct vsp1_route *route;
 
+	struct vsp1_pipeline *pipe;
+
 	struct list_head list_dev;
 	struct list_head list_pipe;
 
@@ -162,6 +161,12 @@ struct media_pad *vsp1_entity_remote_pad(struct media_pad *pad);
 int vsp1_subdev_get_pad_format(struct v4l2_subdev *subdev,
 			       struct v4l2_subdev_pad_config *cfg,
 			       struct v4l2_subdev_format *fmt);
+int vsp1_subdev_set_pad_format(struct v4l2_subdev *subdev,
+			       struct v4l2_subdev_pad_config *cfg,
+			       struct v4l2_subdev_format *fmt,
+			       const unsigned int *codes, unsigned int ncodes,
+			       unsigned int min_width, unsigned int min_height,
+			       unsigned int max_width, unsigned int max_height);
 int vsp1_subdev_enum_mbus_code(struct v4l2_subdev *subdev,
 			       struct v4l2_subdev_pad_config *cfg,
 			       struct v4l2_subdev_mbus_code_enum *code,
