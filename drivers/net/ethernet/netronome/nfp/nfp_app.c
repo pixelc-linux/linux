@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017 Netronome Systems, Inc.
+ * Copyright (C) 2017-2018 Netronome Systems, Inc.
  *
  * This software is dual licensed under the GNU General License Version 2,
  * June 1991 as shown in the file COPYING in the top-level directory of this
@@ -53,6 +53,9 @@ static const struct nfp_app_type *apps[] = {
 #endif
 #ifdef CONFIG_NFP_APP_FLOWER
 	[NFP_APP_FLOWER_NIC]	= &app_flower,
+#endif
+#ifdef CONFIG_NFP_APP_ABM_NIC
+	[NFP_APP_ACTIVE_BUFFER_MGMT_NIC] = &app_abm,
 #endif
 };
 
