@@ -1,5 +1,5 @@
 /*
- * Copyright(c) 2015 - 2017 Intel Corporation.
+ * Copyright(c) 2015 - 2018 Intel Corporation.
  *
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
@@ -227,9 +227,7 @@ struct hfi1_ibdev {
 	/* per HFI symlinks to above */
 	struct dentry *hfi1_ibdev_link;
 #ifdef CONFIG_FAULT_INJECTION
-	struct fault_opcode *fault_opcode;
-	struct fault_packet *fault_packet;
-	bool fault_suppress_err;
+	struct fault *fault;
 #endif
 #endif
 };
@@ -329,8 +327,6 @@ void hfi1_rc_send_complete(struct rvt_qp *qp, struct hfi1_opa_header *opah);
 void hfi1_ud_rcv(struct hfi1_packet *packet);
 
 int hfi1_lookup_pkey_idx(struct hfi1_ibport *ibp, u16 pkey);
-
-int hfi1_rvt_get_rwqe(struct rvt_qp *qp, int wr_id_only);
 
 void hfi1_migrate_qp(struct rvt_qp *qp);
 
