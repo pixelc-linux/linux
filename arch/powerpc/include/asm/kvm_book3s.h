@@ -96,6 +96,7 @@ struct kvmppc_vcore {
 	struct kvm_vcpu *runner;
 	struct kvm *kvm;
 	u64 tb_offset;		/* guest timebase - host timebase */
+	u64 tb_offset_applied;	/* timebase offset currently in force */
 	ulong lpcr;
 	u32 arch_compat;
 	ulong pcr;
@@ -103,6 +104,7 @@ struct kvmppc_vcore {
 	ulong vtb;		/* virtual timebase */
 	ulong conferring_threads;
 	unsigned int halt_poll_ns;
+	atomic_t online_count;
 };
 
 struct kvmppc_vcpu_book3s {
@@ -273,12 +275,12 @@ static inline struct kvmppc_vcpu_book3s *to_book3s(struct kvm_vcpu *vcpu)
 
 static inline void kvmppc_set_gpr(struct kvm_vcpu *vcpu, int num, ulong val)
 {
-	vcpu->arch.gpr[num] = val;
+	vcpu->arch.regs.gpr[num] = val;
 }
 
 static inline ulong kvmppc_get_gpr(struct kvm_vcpu *vcpu, int num)
 {
-	return vcpu->arch.gpr[num];
+	return vcpu->arch.regs.gpr[num];
 }
 
 static inline void kvmppc_set_cr(struct kvm_vcpu *vcpu, u32 val)
@@ -293,42 +295,42 @@ static inline u32 kvmppc_get_cr(struct kvm_vcpu *vcpu)
 
 static inline void kvmppc_set_xer(struct kvm_vcpu *vcpu, ulong val)
 {
-	vcpu->arch.xer = val;
+	vcpu->arch.regs.xer = val;
 }
 
 static inline ulong kvmppc_get_xer(struct kvm_vcpu *vcpu)
 {
-	return vcpu->arch.xer;
+	return vcpu->arch.regs.xer;
 }
 
 static inline void kvmppc_set_ctr(struct kvm_vcpu *vcpu, ulong val)
 {
-	vcpu->arch.ctr = val;
+	vcpu->arch.regs.ctr = val;
 }
 
 static inline ulong kvmppc_get_ctr(struct kvm_vcpu *vcpu)
 {
-	return vcpu->arch.ctr;
+	return vcpu->arch.regs.ctr;
 }
 
 static inline void kvmppc_set_lr(struct kvm_vcpu *vcpu, ulong val)
 {
-	vcpu->arch.lr = val;
+	vcpu->arch.regs.link = val;
 }
 
 static inline ulong kvmppc_get_lr(struct kvm_vcpu *vcpu)
 {
-	return vcpu->arch.lr;
+	return vcpu->arch.regs.link;
 }
 
 static inline void kvmppc_set_pc(struct kvm_vcpu *vcpu, ulong val)
 {
-	vcpu->arch.pc = val;
+	vcpu->arch.regs.nip = val;
 }
 
 static inline ulong kvmppc_get_pc(struct kvm_vcpu *vcpu)
 {
-	return vcpu->arch.pc;
+	return vcpu->arch.regs.nip;
 }
 
 static inline u64 kvmppc_get_msr(struct kvm_vcpu *vcpu);

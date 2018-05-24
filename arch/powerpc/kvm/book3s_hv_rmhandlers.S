@@ -639,6 +639,10 @@ kvmppc_hv_entry:
 	/* Primary thread switches to guest partition. */
 	cmpwi	r6,0
 	bne	10f
+
+	/* Radix has already switched LPID and flushed core TLB */
+	bne	cr7, 22f
+
 	lwz	r7,KVM_LPID(r9)
 BEGIN_FTR_SECTION
 	ld	r6,KVM_SDR1(r9)
@@ -650,7 +654,7 @@ END_FTR_SECTION_IFCLR(CPU_FTR_ARCH_300)
 	mtspr	SPRN_LPID,r7
 	isync
 
-	/* See if we need to flush the TLB */
+	/* See if we need to flush the TLB. Hash has to be done in RM */
 	lhz	r6,PACAPACAINDEX(r13)	/* test_bit(cpu, need_tlb_flush) */
 BEGIN_FTR_SECTION
 	/*
@@ -677,15 +681,10 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	li	r7,0x800		/* IS field = 0b10 */
 	ptesync
 	li	r0,0			/* RS for P9 version of tlbiel */
-	bne	cr7, 29f
 28:	tlbiel	r7			/* On P9, rs=0, RIC=0, PRS=0, R=0 */
 	addi	r7,r7,0x1000
 	bdnz	28b
-	b	30f
-29:	PPC_TLBIEL(7,0,2,1,1)		/* for radix, RIC=2, PRS=1, R=1 */
-	addi	r7,r7,0x1000
-	bdnz	29b
-30:	ptesync
+	ptesync
 23:	ldarx	r7,0,r6			/* clear the bit after TLB flushed */
 	andc	r7,r7,r8
 	stdcx.	r7,0,r6
@@ -695,6 +694,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 22:	ld	r8,VCORE_TB_OFFSET(r5)
 	cmpdi	r8,0
 	beq	37f
+	std	r8, VCORE_TB_OFFSET_APPL(r5)
 	mftb	r6		/* current host timebase */
 	add	r8,r8,r6
 	mtspr	SPRN_TBU40,r8	/* update upper 40 bits */
@@ -943,18 +943,6 @@ FTR_SECTION_ELSE
 ALT_FTR_SECTION_END_IFCLR(CPU_FTR_ARCH_300)
 8:
 
-	/*
-	 * Set the decrementer to the guest decrementer.
-	 */
-	ld	r8,VCPU_DEC_EXPIRES(r4)
-	/* r8 is a host timebase value here, convert to guest TB */
-	ld	r5,HSTATE_KVM_VCORE(r13)
-	ld	r6,VCORE_TB_OFFSET(r5)
-	add	r8,r8,r6
-	mftb	r7
-	subf	r3,r7,r8
-	mtspr	SPRN_DEC,r3
-
 	ld	r5, VCPU_SPRG0(r4)
 	ld	r6, VCPU_SPRG1(r4)
 	ld	r7, VCPU_SPRG2(r4)
@@ -1007,6 +995,18 @@ ALT_FTR_SECTION_END_IFCLR(CPU_FTR_ARCH_300)
 	ld	r8,VCORE_LPCR(r5)
 	mtspr	SPRN_LPCR,r8
 	isync
+
+	/*
+	 * Set the decrementer to the guest decrementer.
+	 */
+	ld	r8,VCPU_DEC_EXPIRES(r4)
+	/* r8 is a host timebase value here, convert to guest TB */
+	ld	r5,HSTATE_KVM_VCORE(r13)
+	ld	r6,VCORE_TB_OFFSET_APPL(r5)
+	add	r8,r8,r6
+	mftb	r7
+	subf	r3,r7,r8
+	mtspr	SPRN_DEC,r3
 
 	/* Check if HDEC expires soon */
 	mfspr	r3, SPRN_HDEC
@@ -1600,8 +1600,27 @@ END_MMU_FTR_SECTION_IFSET(MMU_FTR_TYPE_RADIX)
 
 guest_bypass:
 	stw	r12, STACK_SLOT_TRAP(r1)
-	mr 	r3, r12
+
+	/* Save DEC */
+	/* Do this before kvmhv_commence_exit so we know TB is guest TB */
+	ld	r3, HSTATE_KVM_VCORE(r13)
+	mfspr	r5,SPRN_DEC
+	mftb	r6
+	/* On P9, if the guest has large decr enabled, don't sign extend */
+BEGIN_FTR_SECTION
+	ld	r4, VCORE_LPCR(r3)
+	andis.	r4, r4, LPCR_LD@h
+	bne	16f
+END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
+	extsw	r5,r5
+16:	add	r5,r5,r6
+	/* r5 is a guest timebase value here, convert to host TB */
+	ld	r4,VCORE_TB_OFFSET_APPL(r3)
+	subf	r5,r4,r5
+	std	r5,VCPU_DEC_EXPIRES(r9)
+
 	/* Increment exit count, poke other threads to exit */
+	mr 	r3, r12
 	bl	kvmhv_commence_exit
 	nop
 	ld	r9, HSTATE_KVM_VCPU(r13)
@@ -1641,23 +1660,6 @@ guest_bypass:
 	add	r4,r4,r6
 	mtspr	SPRN_PURR,r3
 	mtspr	SPRN_SPURR,r4
-
-	/* Save DEC */
-	ld	r3, HSTATE_KVM_VCORE(r13)
-	mfspr	r5,SPRN_DEC
-	mftb	r6
-	/* On P9, if the guest has large decr enabled, don't sign extend */
-BEGIN_FTR_SECTION
-	ld	r4, VCORE_LPCR(r3)
-	andis.	r4, r4, LPCR_LD@h
-	bne	16f
-END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
-	extsw	r5,r5
-16:	add	r5,r5,r6
-	/* r5 is a guest timebase value here, convert to host TB */
-	ld	r4,VCORE_TB_OFFSET(r3)
-	subf	r5,r4,r5
-	std	r5,VCPU_DEC_EXPIRES(r9)
 
 BEGIN_FTR_SECTION
 	b	8f
@@ -1908,6 +1910,14 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	cmpwi	cr2, r0, 0
 	beq	cr2, 4f
 
+	/*
+	 * Radix: do eieio; tlbsync; ptesync sequence in case we
+	 * interrupted the guest between a tlbie and a ptesync.
+	 */
+	eieio
+	tlbsync
+	ptesync
+
 	/* Radix: Handle the case where the guest used an illegal PID */
 	LOAD_REG_ADDR(r4, mmu_base_pid)
 	lwz	r3, VCPU_GUEST_PID(r9)
@@ -2020,9 +2030,11 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 
 27:
 	/* Subtract timebase offset from timebase */
-	ld	r8,VCORE_TB_OFFSET(r5)
+	ld	r8, VCORE_TB_OFFSET_APPL(r5)
 	cmpdi	r8,0
 	beq	17f
+	li	r0, 0
+	std	r0, VCORE_TB_OFFSET_APPL(r5)
 	mftb	r6			/* current guest timebase */
 	subf	r8,r8,r6
 	mtspr	SPRN_TBU40,r8		/* update upper 40 bits */
@@ -2703,7 +2715,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 	add	r3, r3, r5
 	ld	r4, HSTATE_KVM_VCPU(r13)
 	ld	r5, HSTATE_KVM_VCORE(r13)
-	ld	r6, VCORE_TB_OFFSET(r5)
+	ld	r6, VCORE_TB_OFFSET_APPL(r5)
 	subf	r3, r6, r3	/* convert to host TB value */
 	std	r3, VCPU_DEC_EXPIRES(r4)
 
@@ -2802,7 +2814,7 @@ END_FTR_SECTION(CPU_FTR_TM | CPU_FTR_P9_TM_HV_ASSIST, 0)
 	/* Restore guest decrementer */
 	ld	r3, VCPU_DEC_EXPIRES(r4)
 	ld	r5, HSTATE_KVM_VCORE(r13)
-	ld	r6, VCORE_TB_OFFSET(r5)
+	ld	r6, VCORE_TB_OFFSET_APPL(r5)
 	add	r3, r3, r6	/* convert host TB to guest TB value */
 	mftb	r7
 	subf	r3, r7, r3
@@ -3559,6 +3571,8 @@ END_MMU_FTR_SECTION_IFSET(MMU_FTR_TYPE_RADIX)
 	bcl	20, 31, .+4
 5:	mflr	r3
 	addi	r3, r3, 9f - 5b
+	li	r4, -1
+	rldimi	r3, r4, 62, 0	/* ensure 0xc000000000000000 bits are set */
 	ld	r4, PACAKMSR(r13)
 	mtspr	SPRN_SRR0, r3
 	mtspr	SPRN_SRR1, r4
@@ -3609,12 +3623,9 @@ kvmppc_fix_pmao:
  */
 kvmhv_start_timing:
 	ld	r5, HSTATE_KVM_VCORE(r13)
-	lbz	r6, VCORE_IN_GUEST(r5)
-	cmpwi	r6, 0
-	beq	5f				/* if in guest, need to */
-	ld	r6, VCORE_TB_OFFSET(r5)		/* subtract timebase offset */
-5:	mftb	r5
-	subf	r5, r6, r5
+	ld	r6, VCORE_TB_OFFSET_APPL(r5)
+	mftb	r5
+	subf	r5, r6, r5	/* subtract current timebase offset */
 	std	r3, VCPU_CUR_ACTIVITY(r4)
 	std	r5, VCPU_ACTIVITY_START(r4)
 	blr
@@ -3625,15 +3636,12 @@ kvmhv_start_timing:
  */
 kvmhv_accumulate_time:
 	ld	r5, HSTATE_KVM_VCORE(r13)
-	lbz	r8, VCORE_IN_GUEST(r5)
-	cmpwi	r8, 0
-	beq	4f				/* if in guest, need to */
-	ld	r8, VCORE_TB_OFFSET(r5)		/* subtract timebase offset */
-4:	ld	r5, VCPU_CUR_ACTIVITY(r4)
+	ld	r8, VCORE_TB_OFFSET_APPL(r5)
+	ld	r5, VCPU_CUR_ACTIVITY(r4)
 	ld	r6, VCPU_ACTIVITY_START(r4)
 	std	r3, VCPU_CUR_ACTIVITY(r4)
 	mftb	r7
-	subf	r7, r8, r7
+	subf	r7, r8, r7	/* subtract current timebase offset */
 	std	r7, VCPU_ACTIVITY_START(r4)
 	cmpdi	r5, 0
 	beqlr
