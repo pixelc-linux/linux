@@ -183,7 +183,7 @@ static void dsps_musb_enable(struct musb *musb)
 	musb_writel(reg_base, wrp->coreintr_set, coremask);
 	/* start polling for ID change in dual-role idle mode */
 	if (musb->xceiv->otg->state == OTG_STATE_B_IDLE &&
-			musb->port_mode == MUSB_PORT_MODE_DUAL_ROLE)
+			musb->port_mode == MUSB_OTG)
 		dsps_mod_timer(glue, -1);
 }
 
@@ -231,7 +231,7 @@ static int dsps_check_status(struct musb *musb, void *unused)
 		break;
 	case OTG_STATE_A_WAIT_BCON:
 		/* keep VBUS on for host-only mode */
-		if (musb->port_mode == MUSB_PORT_MODE_HOST) {
+		if (musb->port_mode == MUSB_HOST) {
 			dsps_mod_timer_optional(glue);
 			break;
 		}
@@ -360,13 +360,11 @@ static irqreturn_t dsps_interrupt(int irq, void *hci)
 			WARNING("VBUS error workaround (delay coming)\n");
 		} else if (drvvbus) {
 			MUSB_HST_MODE(musb);
-			musb->xceiv->otg->default_a = 1;
 			musb->xceiv->otg->state = OTG_STATE_A_WAIT_VRISE;
 			dsps_mod_timer_optional(glue);
 		} else {
 			musb->is_active = 0;
 			MUSB_DEV_MODE(musb);
-			musb->xceiv->otg->default_a = 0;
 			musb->xceiv->otg->state = OTG_STATE_B_IDLE;
 		}
 
@@ -729,25 +727,6 @@ static int get_int_prop(struct device_node *dn, const char *s)
 	return val;
 }
 
-static int get_musb_port_mode(struct device *dev)
-{
-	enum usb_dr_mode mode;
-
-	mode = usb_get_dr_mode(dev);
-	switch (mode) {
-	case USB_DR_MODE_HOST:
-		return MUSB_PORT_MODE_HOST;
-
-	case USB_DR_MODE_PERIPHERAL:
-		return MUSB_PORT_MODE_GADGET;
-
-	case USB_DR_MODE_UNKNOWN:
-	case USB_DR_MODE_OTG:
-	default:
-		return MUSB_PORT_MODE_DUAL_ROLE;
-	}
-}
-
 static int dsps_create_musb_pdev(struct dsps_glue *glue,
 		struct platform_device *parent)
 {
@@ -786,6 +765,7 @@ static int dsps_create_musb_pdev(struct dsps_glue *glue,
 	musb->dev.parent		= dev;
 	musb->dev.dma_mask		= &musb_dmamask;
 	musb->dev.coherent_dma_mask	= musb_dmamask;
+	device_set_of_node_from_dev(&musb->dev, &parent->dev);
 
 	glue->musb = musb;
 
@@ -807,7 +787,7 @@ static int dsps_create_musb_pdev(struct dsps_glue *glue,
 	config->num_eps = get_int_prop(dn, "mentor,num-eps");
 	config->ram_bits = get_int_prop(dn, "mentor,ram-bits");
 	config->host_port_deassert_reset_at_resume = 1;
-	pdata.mode = get_musb_port_mode(dev);
+	pdata.mode = musb_get_mode(dev);
 	/* DT keeps this entry in mA, musb expects it as per USB spec */
 	pdata.power = get_int_prop(dn, "mentor,power") / 2;
 
@@ -1047,7 +1027,7 @@ static int dsps_resume(struct device *dev)
 	musb_writel(mbase, wrp->tx_mode, glue->context.tx_mode);
 	musb_writel(mbase, wrp->rx_mode, glue->context.rx_mode);
 	if (musb->xceiv->otg->state == OTG_STATE_B_IDLE &&
-	    musb->port_mode == MUSB_PORT_MODE_DUAL_ROLE)
+	    musb->port_mode == MUSB_OTG)
 		dsps_mod_timer(glue, -1);
 
 	pm_runtime_put(dev);
