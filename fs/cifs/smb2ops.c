@@ -212,7 +212,7 @@ smb2_find_mid(struct TCP_Server_Info *server, char *buf)
 }
 
 static void
-smb2_dump_detail(void *buf)
+smb2_dump_detail(void *buf, struct TCP_Server_Info *server)
 {
 #ifdef CONFIG_CIFS_DEBUG2
 	struct smb2_sync_hdr *shdr = get_sync_hdr(buf);
@@ -220,7 +220,8 @@ smb2_dump_detail(void *buf)
 	cifs_dbg(VFS, "Cmd: %d Err: 0x%x Flags: 0x%x Mid: %llu Pid: %d\n",
 		 shdr->Command, shdr->Status, shdr->Flags, shdr->MessageId,
 		 shdr->ProcessId);
-	cifs_dbg(VFS, "smb buf %p len %u\n", buf, smb2_calc_size(buf));
+	cifs_dbg(VFS, "smb buf %p len %u\n", buf,
+		 server->ops->calc_smb_size(buf, server));
 #endif
 }
 
@@ -322,6 +323,40 @@ SMB3_request_interfaces(const unsigned int xid, struct cifs_tcon *tcon)
 }
 #endif /* STATS2 */
 
+/*
+ * Open the directory at the root of a share
+ */
+int open_shroot(unsigned int xid, struct cifs_tcon *tcon, struct cifs_fid *pfid)
+{
+	struct cifs_open_parms oparams;
+	int rc;
+	__le16 srch_path = 0; /* Null - since an open of top of share */
+	u8 oplock = SMB2_OPLOCK_LEVEL_NONE;
+
+	mutex_lock(&tcon->prfid_mutex);
+	if (tcon->valid_root_fid) {
+		cifs_dbg(FYI, "found a cached root file handle\n");
+		memcpy(pfid, tcon->prfid, sizeof(struct cifs_fid));
+		mutex_unlock(&tcon->prfid_mutex);
+		return 0;
+	}
+
+	oparams.tcon = tcon;
+	oparams.create_options = 0;
+	oparams.desired_access = FILE_READ_ATTRIBUTES;
+	oparams.disposition = FILE_OPEN;
+	oparams.fid = pfid;
+	oparams.reconnect = false;
+
+	rc = SMB2_open(xid, &oparams, &srch_path, &oplock, NULL, NULL);
+	if (rc == 0) {
+		memcpy(tcon->prfid, pfid, sizeof(struct cifs_fid));
+		tcon->valid_root_fid = true;
+	}
+	mutex_unlock(&tcon->prfid_mutex);
+	return rc;
+}
+
 static void
 smb3_qfs_tcon(const unsigned int xid, struct cifs_tcon *tcon)
 {
@@ -330,6 +365,7 @@ smb3_qfs_tcon(const unsigned int xid, struct cifs_tcon *tcon)
 	u8 oplock = SMB2_OPLOCK_LEVEL_NONE;
 	struct cifs_open_parms oparms;
 	struct cifs_fid fid;
+	bool no_cached_open = tcon->nohandlecache;
 
 	oparms.tcon = tcon;
 	oparms.desired_access = FILE_READ_ATTRIBUTES;
@@ -338,7 +374,11 @@ smb3_qfs_tcon(const unsigned int xid, struct cifs_tcon *tcon)
 	oparms.fid = &fid;
 	oparms.reconnect = false;
 
-	rc = SMB2_open(xid, &oparms, &srch_path, &oplock, NULL, NULL);
+	if (no_cached_open)
+		rc = SMB2_open(xid, &oparms, &srch_path, &oplock, NULL, NULL);
+	else
+		rc = open_shroot(xid, tcon, &fid);
+
 	if (rc)
 		return;
 
@@ -352,7 +392,8 @@ smb3_qfs_tcon(const unsigned int xid, struct cifs_tcon *tcon)
 			FS_DEVICE_INFORMATION);
 	SMB2_QFS_attr(xid, tcon, fid.persistent_fid, fid.volatile_fid,
 			FS_SECTOR_SIZE_INFORMATION); /* SMB3 specific */
-	SMB2_close(xid, tcon, fid.persistent_fid, fid.volatile_fid);
+	if (no_cached_open)
+		SMB2_close(xid, tcon, fid.persistent_fid, fid.volatile_fid);
 	return;
 }
 
@@ -393,6 +434,9 @@ smb2_is_path_accessible(const unsigned int xid, struct cifs_tcon *tcon,
 	__u8 oplock = SMB2_OPLOCK_LEVEL_NONE;
 	struct cifs_open_parms oparms;
 	struct cifs_fid fid;
+
+	if ((*full_path == 0) && tcon->valid_root_fid)
+		return 0;
 
 	utf16_path = cifs_convert_path_to_utf16(full_path, cifs_sb);
 	if (!utf16_path)
@@ -704,9 +748,11 @@ smb2_dump_share_caps(struct seq_file *m, struct cifs_tcon *tcon)
 		seq_puts(m, " TRIM-support,");
 
 	seq_printf(m, "\tShare Flags: 0x%x", tcon->share_flags);
+	seq_printf(m, "\n\ttid: 0x%x", tcon->tid);
 	if (tcon->perf_sector_size)
 		seq_printf(m, "\tOptimal sector size: 0x%x",
 			   tcon->perf_sector_size);
+	seq_printf(m, "\tMaximal Access: 0x%x", tcon->maximal_access);
 }
 
 static void
@@ -1593,8 +1639,11 @@ get_smb2_acl_by_path(struct cifs_sb_info *cifs_sb,
 		oparms.create_options = 0;
 
 	utf16_path = cifs_convert_path_to_utf16(path, cifs_sb);
-	if (!utf16_path)
-		return ERR_PTR(-ENOMEM);
+	if (!utf16_path) {
+		rc = -ENOMEM;
+		free_xid(xid);
+		return ERR_PTR(rc);
+	}
 
 	oparms.tcon = tcon;
 	oparms.desired_access = READ_CONTROL;
@@ -1652,8 +1701,11 @@ set_smb2_acl(struct cifs_ntsd *pnntsd, __u32 acllen,
 		access_flags = WRITE_DAC;
 
 	utf16_path = cifs_convert_path_to_utf16(path, cifs_sb);
-	if (!utf16_path)
-		return -ENOMEM;
+	if (!utf16_path) {
+		rc = -ENOMEM;
+		free_xid(xid);
+		return rc;
+	}
 
 	oparms.tcon = tcon;
 	oparms.desired_access = access_flags;
@@ -1713,15 +1765,21 @@ static long smb3_zero_range(struct file *file, struct cifs_tcon *tcon,
 
 	/* if file not oplocked can't be sure whether asking to extend size */
 	if (!CIFS_CACHE_READ(cifsi))
-		if (keep_size == false)
-			return -EOPNOTSUPP;
+		if (keep_size == false) {
+			rc = -EOPNOTSUPP;
+			free_xid(xid);
+			return rc;
+		}
 
 	/*
 	 * Must check if file sparse since fallocate -z (zero range) assumes
 	 * non-sparse allocation
 	 */
-	if (!(cifsi->cifsAttrs & FILE_ATTRIBUTE_SPARSE_FILE))
-		return -EOPNOTSUPP;
+	if (!(cifsi->cifsAttrs & FILE_ATTRIBUTE_SPARSE_FILE)) {
+		rc = -EOPNOTSUPP;
+		free_xid(xid);
+		return rc;
+	}
 
 	/*
 	 * need to make sure we are not asked to extend the file since the SMB3
@@ -1730,8 +1788,11 @@ static long smb3_zero_range(struct file *file, struct cifs_tcon *tcon,
 	 * which for a non sparse file would zero the newly extended range
 	 */
 	if (keep_size == false)
-		if (i_size_read(inode) < offset + len)
-			return -EOPNOTSUPP;
+		if (i_size_read(inode) < offset + len) {
+			rc = -EOPNOTSUPP;
+			free_xid(xid);
+			return rc;
+		}
 
 	cifs_dbg(FYI, "offset %lld len %lld", offset, len);
 
@@ -1764,8 +1825,11 @@ static long smb3_punch_hole(struct file *file, struct cifs_tcon *tcon,
 
 	/* Need to make file sparse, if not already, before freeing range. */
 	/* Consider adding equivalent for compressed since it could also work */
-	if (!smb2_set_sparse(xid, tcon, cfile, inode, set_sparse))
-		return -EOPNOTSUPP;
+	if (!smb2_set_sparse(xid, tcon, cfile, inode, set_sparse)) {
+		rc = -EOPNOTSUPP;
+		free_xid(xid);
+		return rc;
+	}
 
 	cifs_dbg(FYI, "offset %lld len %lld", offset, len);
 
@@ -1796,8 +1860,10 @@ static long smb3_simple_falloc(struct file *file, struct cifs_tcon *tcon,
 
 	/* if file not oplocked can't be sure whether asking to extend size */
 	if (!CIFS_CACHE_READ(cifsi))
-		if (keep_size == false)
-			return -EOPNOTSUPP;
+		if (keep_size == false) {
+			free_xid(xid);
+			return rc;
+		}
 
 	/*
 	 * Files are non-sparse by default so falloc may be a no-op
@@ -1806,14 +1872,16 @@ static long smb3_simple_falloc(struct file *file, struct cifs_tcon *tcon,
 	 */
 	if ((cifsi->cifsAttrs & FILE_ATTRIBUTE_SPARSE_FILE) == 0) {
 		if (keep_size == true)
-			return 0;
+			rc = 0;
 		/* check if extending file */
 		else if (i_size_read(inode) >= off + len)
 			/* not extending file and already not sparse */
-			return 0;
+			rc = 0;
 		/* BB: in future add else clause to extend file */
 		else
-			return -EOPNOTSUPP;
+			rc = -EOPNOTSUPP;
+		free_xid(xid);
+		return rc;
 	}
 
 	if ((keep_size == true) || (i_size_read(inode) >= off + len)) {
@@ -1825,8 +1893,11 @@ static long smb3_simple_falloc(struct file *file, struct cifs_tcon *tcon,
 		 * ie potentially making a few extra pages at the beginning
 		 * or end of the file non-sparse via set_sparse is harmless.
 		 */
-		if ((off > 8192) || (off + len + 8192 < i_size_read(inode)))
-			return -EOPNOTSUPP;
+		if ((off > 8192) || (off + len + 8192 < i_size_read(inode))) {
+			rc = -EOPNOTSUPP;
+			free_xid(xid);
+			return rc;
+		}
 
 		rc = smb2_set_sparse(xid, tcon, cfile, inode, false);
 	}
@@ -2035,7 +2106,7 @@ smb3_create_lease_buf(u8 *lease_key, u8 oplock)
 }
 
 static __u8
-smb2_parse_lease_buf(void *buf, unsigned int *epoch)
+smb2_parse_lease_buf(void *buf, unsigned int *epoch, char *lease_key)
 {
 	struct create_lease *lc = (struct create_lease *)buf;
 
@@ -2046,13 +2117,16 @@ smb2_parse_lease_buf(void *buf, unsigned int *epoch)
 }
 
 static __u8
-smb3_parse_lease_buf(void *buf, unsigned int *epoch)
+smb3_parse_lease_buf(void *buf, unsigned int *epoch, char *lease_key)
 {
 	struct create_lease_v2 *lc = (struct create_lease_v2 *)buf;
 
 	*epoch = le16_to_cpu(lc->lcontext.Epoch);
 	if (lc->lcontext.LeaseFlags & SMB2_LEASE_FLAG_BREAK_IN_PROGRESS)
 		return SMB2_OPLOCK_LEVEL_NOCHANGE;
+	if (lease_key)
+		memcpy(lease_key, &lc->lcontext.LeaseKeyLow,
+		       SMB2_LEASE_KEY_SIZE);
 	return le32_to_cpu(lc->lcontext.LeaseState);
 }
 
