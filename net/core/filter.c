@@ -4096,7 +4096,7 @@ static int bpf_fib_set_fwd_params(struct bpf_fib_lookup *params,
 
 #if IS_ENABLED(CONFIG_INET)
 static int bpf_ipv4_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
-			       u32 flags)
+			       u32 flags, bool check_mtu)
 {
 	struct in_device *in_dev;
 	struct neighbour *neigh;
@@ -4105,6 +4105,7 @@ static int bpf_ipv4_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
 	struct fib_nh *nh;
 	struct flowi4 fl4;
 	int err;
+	u32 mtu;
 
 	dev = dev_get_by_index_rcu(net, params->ifindex);
 	if (unlikely(!dev))
@@ -4156,6 +4157,12 @@ static int bpf_ipv4_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
 	if (res.fi->fib_nhs > 1)
 		fib_select_path(net, &res, &fl4, NULL);
 
+	if (check_mtu) {
+		mtu = ip_mtu_from_fib_result(&res, params->ipv4_dst);
+		if (params->tot_len > mtu)
+			return 0;
+	}
+
 	nh = &res.fi->fib_nh[res.nh_sel];
 
 	/* do not handle lwt encaps right now */
@@ -4184,7 +4191,7 @@ static int bpf_ipv4_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
 
 #if IS_ENABLED(CONFIG_IPV6)
 static int bpf_ipv6_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
-			       u32 flags)
+			       u32 flags, bool check_mtu)
 {
 	struct in6_addr *src = (struct in6_addr *) params->ipv6_src;
 	struct in6_addr *dst = (struct in6_addr *) params->ipv6_dst;
@@ -4195,6 +4202,7 @@ static int bpf_ipv6_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
 	struct flowi6 fl6;
 	int strict = 0;
 	int oif;
+	u32 mtu;
 
 	/* link local addresses are never forwarded */
 	if (rt6_need_strict(dst) || rt6_need_strict(src))
@@ -4257,6 +4265,12 @@ static int bpf_ipv6_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
 						       fl6.flowi6_oif, NULL,
 						       strict);
 
+	if (check_mtu) {
+		mtu = ipv6_stub->ip6_mtu_from_fib6(f6i, dst, src);
+		if (params->tot_len > mtu)
+			return 0;
+	}
+
 	if (f6i->fib6_nh.nh_lwtstate)
 		return 0;
 
@@ -4289,12 +4303,12 @@ BPF_CALL_4(bpf_xdp_fib_lookup, struct xdp_buff *, ctx,
 #if IS_ENABLED(CONFIG_INET)
 	case AF_INET:
 		return bpf_ipv4_fib_lookup(dev_net(ctx->rxq->dev), params,
-					   flags);
+					   flags, true);
 #endif
 #if IS_ENABLED(CONFIG_IPV6)
 	case AF_INET6:
 		return bpf_ipv6_fib_lookup(dev_net(ctx->rxq->dev), params,
-					   flags);
+					   flags, true);
 #endif
 	}
 	return 0;
@@ -4313,20 +4327,34 @@ static const struct bpf_func_proto bpf_xdp_fib_lookup_proto = {
 BPF_CALL_4(bpf_skb_fib_lookup, struct sk_buff *, skb,
 	   struct bpf_fib_lookup *, params, int, plen, u32, flags)
 {
+	struct net *net = dev_net(skb->dev);
+	int index = 0;
+
 	if (plen < sizeof(*params))
 		return -EINVAL;
 
 	switch (params->family) {
 #if IS_ENABLED(CONFIG_INET)
 	case AF_INET:
-		return bpf_ipv4_fib_lookup(dev_net(skb->dev), params, flags);
+		index = bpf_ipv4_fib_lookup(net, params, flags, false);
+		break;
 #endif
 #if IS_ENABLED(CONFIG_IPV6)
 	case AF_INET6:
-		return bpf_ipv6_fib_lookup(dev_net(skb->dev), params, flags);
+		index = bpf_ipv6_fib_lookup(net, params, flags, false);
+		break;
 #endif
 	}
-	return -ENOTSUPP;
+
+	if (index > 0) {
+		struct net_device *dev;
+
+		dev = dev_get_by_index_rcu(net, index);
+		if (!is_skb_forwardable(dev, skb))
+			index = 0;
+	}
+
+	return index;
 }
 
 static const struct bpf_func_proto bpf_skb_fib_lookup_proto = {
@@ -5155,17 +5183,22 @@ static bool sk_msg_is_valid_access(int off, int size,
 	switch (off) {
 	case offsetof(struct sk_msg_md, data):
 		info->reg_type = PTR_TO_PACKET;
+		if (size != sizeof(__u64))
+			return false;
 		break;
 	case offsetof(struct sk_msg_md, data_end):
 		info->reg_type = PTR_TO_PACKET_END;
+		if (size != sizeof(__u64))
+			return false;
 		break;
+	default:
+		if (size != sizeof(__u32))
+			return false;
 	}
 
 	if (off < 0 || off >= sizeof(struct sk_msg_md))
 		return false;
 	if (off % size != 0)
-		return false;
-	if (size != sizeof(__u64))
 		return false;
 
 	return true;
@@ -5842,7 +5875,8 @@ static u32 sock_ops_convert_ctx_access(enum bpf_access_type type,
 		break;
 
 	case offsetof(struct bpf_sock_ops, local_ip4):
-		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common, skc_rcv_saddr) != 4);
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common,
+					  skc_rcv_saddr) != 4);
 
 		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
 					      struct bpf_sock_ops_kern, sk),
@@ -6159,6 +6193,7 @@ static u32 sk_msg_convert_ctx_access(enum bpf_access_type type,
 				     struct bpf_prog *prog, u32 *target_size)
 {
 	struct bpf_insn *insn = insn_buf;
+	int off;
 
 	switch (si->off) {
 	case offsetof(struct sk_msg_md, data):
@@ -6170,6 +6205,107 @@ static u32 sk_msg_convert_ctx_access(enum bpf_access_type type,
 		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_msg_buff, data_end),
 				      si->dst_reg, si->src_reg,
 				      offsetof(struct sk_msg_buff, data_end));
+		break;
+	case offsetof(struct sk_msg_md, family):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common, skc_family) != 2);
+
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
+					      struct sk_msg_buff, sk),
+				      si->dst_reg, si->src_reg,
+				      offsetof(struct sk_msg_buff, sk));
+		*insn++ = BPF_LDX_MEM(BPF_H, si->dst_reg, si->dst_reg,
+				      offsetof(struct sock_common, skc_family));
+		break;
+
+	case offsetof(struct sk_msg_md, remote_ip4):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common, skc_daddr) != 4);
+
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
+						struct sk_msg_buff, sk),
+				      si->dst_reg, si->src_reg,
+				      offsetof(struct sk_msg_buff, sk));
+		*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->dst_reg,
+				      offsetof(struct sock_common, skc_daddr));
+		break;
+
+	case offsetof(struct sk_msg_md, local_ip4):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common,
+					  skc_rcv_saddr) != 4);
+
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
+					      struct sk_msg_buff, sk),
+				      si->dst_reg, si->src_reg,
+				      offsetof(struct sk_msg_buff, sk));
+		*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->dst_reg,
+				      offsetof(struct sock_common,
+					       skc_rcv_saddr));
+		break;
+
+	case offsetof(struct sk_msg_md, remote_ip6[0]) ...
+	     offsetof(struct sk_msg_md, remote_ip6[3]):
+#if IS_ENABLED(CONFIG_IPV6)
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common,
+					  skc_v6_daddr.s6_addr32[0]) != 4);
+
+		off = si->off;
+		off -= offsetof(struct sk_msg_md, remote_ip6[0]);
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
+						struct sk_msg_buff, sk),
+				      si->dst_reg, si->src_reg,
+				      offsetof(struct sk_msg_buff, sk));
+		*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->dst_reg,
+				      offsetof(struct sock_common,
+					       skc_v6_daddr.s6_addr32[0]) +
+				      off);
+#else
+		*insn++ = BPF_MOV32_IMM(si->dst_reg, 0);
+#endif
+		break;
+
+	case offsetof(struct sk_msg_md, local_ip6[0]) ...
+	     offsetof(struct sk_msg_md, local_ip6[3]):
+#if IS_ENABLED(CONFIG_IPV6)
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common,
+					  skc_v6_rcv_saddr.s6_addr32[0]) != 4);
+
+		off = si->off;
+		off -= offsetof(struct sk_msg_md, local_ip6[0]);
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
+						struct sk_msg_buff, sk),
+				      si->dst_reg, si->src_reg,
+				      offsetof(struct sk_msg_buff, sk));
+		*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->dst_reg,
+				      offsetof(struct sock_common,
+					       skc_v6_rcv_saddr.s6_addr32[0]) +
+				      off);
+#else
+		*insn++ = BPF_MOV32_IMM(si->dst_reg, 0);
+#endif
+		break;
+
+	case offsetof(struct sk_msg_md, remote_port):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common, skc_dport) != 2);
+
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
+						struct sk_msg_buff, sk),
+				      si->dst_reg, si->src_reg,
+				      offsetof(struct sk_msg_buff, sk));
+		*insn++ = BPF_LDX_MEM(BPF_H, si->dst_reg, si->dst_reg,
+				      offsetof(struct sock_common, skc_dport));
+#ifndef __BIG_ENDIAN_BITFIELD
+		*insn++ = BPF_ALU32_IMM(BPF_LSH, si->dst_reg, 16);
+#endif
+		break;
+
+	case offsetof(struct sk_msg_md, local_port):
+		BUILD_BUG_ON(FIELD_SIZEOF(struct sock_common, skc_num) != 2);
+
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
+						struct sk_msg_buff, sk),
+				      si->dst_reg, si->src_reg,
+				      offsetof(struct sk_msg_buff, sk));
+		*insn++ = BPF_LDX_MEM(BPF_H, si->dst_reg, si->dst_reg,
+				      offsetof(struct sock_common, skc_num));
 		break;
 	}
 

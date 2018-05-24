@@ -284,8 +284,8 @@ union bpf_attr {
 		char	map_name[BPF_OBJ_NAME_LEN];
 		__u32	map_ifindex;	/* ifindex of netdev to create on */
 		__u32	btf_fd;		/* fd pointing to a BTF type data */
-		__u32	btf_key_id;	/* BTF type_id of the key */
-		__u32	btf_value_id;	/* BTF type_id of the value */
+		__u32	btf_key_type_id;	/* BTF type_id of the key */
+		__u32	btf_value_type_id;	/* BTF type_id of the value */
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -2176,6 +2176,14 @@ enum sk_action {
 struct sk_msg_md {
 	void *data;
 	void *data_end;
+
+	__u32 family;
+	__u32 remote_ip4;	/* Stored in network byte order */
+	__u32 local_ip4;	/* Stored in network byte order */
+	__u32 remote_ip6[4];	/* Stored in network byte order */
+	__u32 local_ip6[4];	/* Stored in network byte order */
+	__u32 remote_port;	/* Stored in network byte order */
+	__u32 local_port;	/* stored in host byte order */
 };
 
 #define BPF_TAG_SIZE	8
@@ -2211,8 +2219,8 @@ struct bpf_map_info {
 	__u64 netns_dev;
 	__u64 netns_ino;
 	__u32 btf_id;
-	__u32 btf_key_id;
-	__u32 btf_value_id;
+	__u32 btf_key_type_id;
+	__u32 btf_value_type_id;
 } __attribute__((aligned(8)));
 
 struct bpf_btf_info {
