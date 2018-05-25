@@ -207,6 +207,10 @@ struct prctl_mm_map {
 # define PR_SVE_VL_LEN_MASK		0xffff
 # define PR_SVE_VL_INHERIT		(1 << 17) /* inherit across exec */
 
+/* Process-based variant of PDEATHSIG */
+#define PR_SET_PDEATHSIG_PROC		48
+#define PR_GET_PDEATHSIG_PROC		49
+
 /* Per task speculation control */
 #define PR_GET_SPECULATION_CTRL		52
 #define PR_SET_SPECULATION_CTRL		53
