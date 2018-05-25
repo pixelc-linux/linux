@@ -1522,7 +1522,7 @@ static void __vunmap(const void *addr, int deallocate_pages)
 		for (i = 0; i < area->nr_pages; i++) {
 			struct page *page = area->pages[i];
 
-			BUG_ON(!page);
+			__ClearPageVMalloc(page);
 			__free_pages(page, 0);
 		}
 
@@ -1692,6 +1692,9 @@ static void *__vmalloc_area_node(struct vm_struct *area, gfp_t gfp_mask,
 			area->nr_pages = i;
 			goto fail;
 		}
+		__SetPageVMalloc(page);
+		page->vm_area = area;
+		page->vm_offset = i;
 		area->pages[i] = page;
 		if (gfpflags_allow_blocking(gfp_mask|highmem_mask))
 			cond_resched();

@@ -699,6 +699,31 @@ PAGE_TYPE_OPS(Kmemcg, kmemcg)
  */
 PAGE_TYPE_OPS(Table, table)
 
+/*
+ * vmalloc pages may be mapped to userspace, so we need some other way
+ * to distinguish them from other kinds of pages.  Use page->mapping
+ * for this purpose.  Values below 0x1000 cannot be real pointers.
+ */
+#define MAPPING_VMalloc		(void *)0x440
+
+#define PAGE_MAPPING_OPS(name)						\
+static __always_inline int Page##name(struct page *page)		\
+{									\
+	return page->mapping == MAPPING_##name;				\
+}									\
+static __always_inline void __SetPage##name(struct page *page)		\
+{									\
+	VM_BUG_ON_PAGE(page->mapping != NULL, page);			\
+	page->mapping = MAPPING_##name;					\
+}									\
+static __always_inline void __ClearPage##name(struct page *page)	\
+{									\
+	VM_BUG_ON_PAGE(page->mapping != MAPPING_##name, page);		\
+	page->mapping = NULL;						\
+}
+
+PAGE_MAPPING_OPS(VMalloc)
+
 extern bool is_free_buddy_page(struct page *page);
 
 __PAGEFLAG(Isolated, isolated, PF_ANY);

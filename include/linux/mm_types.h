@@ -146,6 +146,11 @@ struct page {
 			spinlock_t ptl;
 #endif
 		};
+		struct {	/* VMalloc pages */
+			struct vm_struct *vm_area;
+			unsigned long vm_offset;
+			unsigned long _vm_id;	/* MAPPING_VMalloc */
+		};
 		struct {	/* ZONE_DEVICE pages */
 			/** @pgmap: Points to the hosting device page map. */
 			struct dev_pagemap *pgmap;
