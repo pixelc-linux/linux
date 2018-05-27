@@ -1242,30 +1242,19 @@ static int pipe_to_user(struct pipe_inode_info *pipe, struct pipe_buffer *buf,
  * For lack of a better implementation, implement vmsplice() to userspace
  * as a simple copy of the pipes pages to the user iov.
  */
-static long vmsplice_to_user(struct file *file, const struct iovec __user *uiov,
-			     unsigned long nr_segs, unsigned int flags)
+static long vmsplice_to_user(struct file *file, struct iov_iter *iter,
+			     unsigned int flags)
 {
-	struct pipe_inode_info *pipe;
-	struct splice_desc sd;
-	long ret;
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter iter;
+	struct pipe_inode_info *pipe = get_pipe_info(file);
+	struct splice_desc sd = {
+		.total_len = iov_iter_count(iter),
+		.flags = flags,
+		.u.data = iter
+	};
+	long ret = 0;
 
-	pipe = get_pipe_info(file);
 	if (!pipe)
 		return -EBADF;
-
-	ret = import_iovec(READ, uiov, nr_segs,
-			   ARRAY_SIZE(iovstack), &iov, &iter);
-	if (ret < 0)
-		return ret;
-
-	sd.total_len = iov_iter_count(&iter);
-	sd.len = 0;
-	sd.flags = flags;
-	sd.u.data = &iter;
-	sd.pos = 0;
 
 	if (sd.total_len) {
 		pipe_lock(pipe);
@@ -1273,7 +1262,6 @@ static long vmsplice_to_user(struct file *file, const struct iovec __user *uiov,
 		pipe_unlock(pipe);
 	}
 
-	kfree(iov);
 	return ret;
 }
 
@@ -1282,14 +1270,11 @@ static long vmsplice_to_user(struct file *file, const struct iovec __user *uiov,
  * as splice-from-memory, where the regular splice is splice-from-file (or
  * to file). In both cases the output is a pipe, naturally.
  */
-static long vmsplice_to_pipe(struct file *file, const struct iovec __user *uiov,
-			     unsigned long nr_segs, unsigned int flags)
+static long vmsplice_to_pipe(struct file *file, struct iov_iter *iter,
+			     unsigned int flags)
 {
 	struct pipe_inode_info *pipe;
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter from;
-	long ret;
+	long ret = 0;
 	unsigned buf_flag = 0;
 
 	if (flags & SPLICE_F_GIFT)
@@ -1299,19 +1284,13 @@ static long vmsplice_to_pipe(struct file *file, const struct iovec __user *uiov,
 	if (!pipe)
 		return -EBADF;
 
-	ret = import_iovec(WRITE, uiov, nr_segs,
-			   ARRAY_SIZE(iovstack), &iov, &from);
-	if (ret < 0)
-		return ret;
-
 	pipe_lock(pipe);
 	ret = wait_for_space(pipe, flags);
 	if (!ret)
-		ret = iter_to_pipe(&from, pipe, buf_flag);
+		ret = iter_to_pipe(iter, pipe, buf_flag);
 	pipe_unlock(pipe);
 	if (ret > 0)
 		wakeup_pipe_readers(pipe);
-	kfree(iov);
 	return ret;
 }
 
@@ -1331,29 +1310,39 @@ static long vmsplice_to_pipe(struct file *file, const struct iovec __user *uiov,
  * Currently we punt and implement it as a normal copy, see pipe_to_user().
  *
  */
-static long do_vmsplice(int fd, const struct iovec __user *iov,
+static long do_vmsplice(int fd, const struct iovec __user *uiov,
 			unsigned long nr_segs, unsigned int flags)
 {
+	struct iovec iovstack[UIO_FASTIOV];
+	struct iovec *iov = iovstack;
+	struct iov_iter iter;
 	struct fd f;
 	long error;
 
 	if (unlikely(flags & ~SPLICE_F_ALL))
 		return -EINVAL;
-	if (unlikely(nr_segs > UIO_MAXIOV))
-		return -EINVAL;
-	else if (unlikely(!nr_segs))
+
+	error = import_iovec(READ, uiov, nr_segs,
+			   ARRAY_SIZE(iovstack), &iov, &iter);
+	if (error < 0)
+		return error;
+
+	if (!iov_iter_count(&iter)) {
+		kfree(iov);
 		return 0;
+	}
 
 	error = -EBADF;
 	f = fdget(fd);
 	if (f.file) {
 		if (f.file->f_mode & FMODE_WRITE)
-			error = vmsplice_to_pipe(f.file, iov, nr_segs, flags);
+			error = vmsplice_to_pipe(f.file, &iter, flags);
 		else if (f.file->f_mode & FMODE_READ)
-			error = vmsplice_to_user(f.file, iov, nr_segs, flags);
+			error = vmsplice_to_user(f.file, &iter, flags);
 
 		fdput(f);
 	}
+	kfree(iov);
 
 	return error;
 }
