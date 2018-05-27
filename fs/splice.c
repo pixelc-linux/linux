@@ -1310,67 +1310,64 @@ static long vmsplice_to_pipe(struct file *file, struct iov_iter *iter,
  * Currently we punt and implement it as a normal copy, see pipe_to_user().
  *
  */
-static long do_vmsplice(int fd, const struct iovec __user *uiov,
-			unsigned long nr_segs, unsigned int flags)
+static long do_vmsplice(int fd, struct iov_iter *iter, unsigned int flags)
 {
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter iter;
 	struct fd f;
 	long error;
 
 	if (unlikely(flags & ~SPLICE_F_ALL))
 		return -EINVAL;
 
-	error = import_iovec(READ, uiov, nr_segs,
-			   ARRAY_SIZE(iovstack), &iov, &iter);
-	if (error < 0)
-		return error;
-
-	if (!iov_iter_count(&iter)) {
-		kfree(iov);
+	if (!iov_iter_count(iter))
 		return 0;
-	}
 
 	error = -EBADF;
 	f = fdget(fd);
 	if (f.file) {
 		if (f.file->f_mode & FMODE_WRITE)
-			error = vmsplice_to_pipe(f.file, &iter, flags);
+			error = vmsplice_to_pipe(f.file, iter, flags);
 		else if (f.file->f_mode & FMODE_READ)
-			error = vmsplice_to_user(f.file, &iter, flags);
+			error = vmsplice_to_user(f.file, iter, flags);
 
 		fdput(f);
 	}
-	kfree(iov);
 
 	return error;
 }
 
-SYSCALL_DEFINE4(vmsplice, int, fd, const struct iovec __user *, iov,
+SYSCALL_DEFINE4(vmsplice, int, fd, const struct iovec __user *, uiov,
 		unsigned long, nr_segs, unsigned int, flags)
 {
-	return do_vmsplice(fd, iov, nr_segs, flags);
+	struct iovec iovstack[UIO_FASTIOV];
+	struct iovec *iov = iovstack;
+	struct iov_iter iter;
+	long error;
+
+	error = import_iovec(READ, uiov, nr_segs,
+			   ARRAY_SIZE(iovstack), &iov, &iter);
+	if (!error) {
+		error = do_vmsplice(fd, &iter, flags);
+		kfree(iov);
+	}
+	return error;
 }
 
 #ifdef CONFIG_COMPAT
 COMPAT_SYSCALL_DEFINE4(vmsplice, int, fd, const struct compat_iovec __user *, iov32,
 		    unsigned int, nr_segs, unsigned int, flags)
 {
-	unsigned i;
-	struct iovec __user *iov;
-	if (nr_segs > UIO_MAXIOV)
-		return -EINVAL;
-	iov = compat_alloc_user_space(nr_segs * sizeof(struct iovec));
-	for (i = 0; i < nr_segs; i++) {
-		struct compat_iovec v;
-		if (get_user(v.iov_base, &iov32[i].iov_base) ||
-		    get_user(v.iov_len, &iov32[i].iov_len) ||
-		    put_user(compat_ptr(v.iov_base), &iov[i].iov_base) ||
-		    put_user(v.iov_len, &iov[i].iov_len))
-			return -EFAULT;
+	struct iovec iovstack[UIO_FASTIOV];
+	struct iovec *iov = iovstack;
+	struct iov_iter iter;
+	long error;
+
+	error = compat_import_iovec(READ, iov32, nr_segs,
+			   ARRAY_SIZE(iovstack), &iov, &iter);
+	if (!error) {
+		error = do_vmsplice(fd, &iter, flags);
+		kfree(iov);
 	}
-	return do_vmsplice(fd, iov, nr_segs, flags);
+	return error;
 }
 #endif
 
