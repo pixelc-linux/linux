@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2002,2005 Silicon Graphics, Inc.
  * All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it would be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write the Free Software Foundation,
- * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -133,16 +121,45 @@ xfs_inobt_get_rec(
 	struct xfs_inobt_rec_incore	*irec,
 	int				*stat)
 {
+	struct xfs_mount		*mp = cur->bc_mp;
+	xfs_agnumber_t			agno = cur->bc_private.a.agno;
 	union xfs_btree_rec		*rec;
 	int				error;
+	uint64_t			realfree;
 
 	error = xfs_btree_get_rec(cur, &rec, stat);
 	if (error || *stat == 0)
 		return error;
 
-	xfs_inobt_btrec_to_irec(cur->bc_mp, rec, irec);
+	xfs_inobt_btrec_to_irec(mp, rec, irec);
+
+	if (!xfs_verify_agino(mp, agno, irec->ir_startino))
+		goto out_bad_rec;
+	if (irec->ir_count < XFS_INODES_PER_HOLEMASK_BIT ||
+	    irec->ir_count > XFS_INODES_PER_CHUNK)
+		goto out_bad_rec;
+	if (irec->ir_freecount > XFS_INODES_PER_CHUNK)
+		goto out_bad_rec;
+
+	/* if there are no holes, return the first available offset */
+	if (!xfs_inobt_issparse(irec->ir_holemask))
+		realfree = irec->ir_free;
+	else
+		realfree = irec->ir_free & xfs_inobt_irec_to_allocmask(irec);
+	if (hweight64(realfree) != irec->ir_freecount)
+		goto out_bad_rec;
 
 	return 0;
+
+out_bad_rec:
+	xfs_warn(mp,
+		"%s Inode BTree record corruption in AG %d detected!",
+		cur->bc_btnum == XFS_BTNUM_INO ? "Used" : "Free", agno);
+	xfs_warn(mp,
+"start inode 0x%x, count 0x%x, free 0x%x freemask 0x%llx, holemask 0x%x",
+		irec->ir_startino, irec->ir_count, irec->ir_freecount,
+		irec->ir_free, irec->ir_holemask);
+	return -EFSCORRUPTED;
 }
 
 /*
@@ -2477,26 +2494,13 @@ xfs_ialloc_log_agi(
 	}
 }
 
-#ifdef DEBUG
-STATIC void
-xfs_check_agi_unlinked(
-	struct xfs_agi		*agi)
-{
-	int			i;
-
-	for (i = 0; i < XFS_AGI_UNLINKED_BUCKETS; i++)
-		ASSERT(agi->agi_unlinked[i]);
-}
-#else
-#define xfs_check_agi_unlinked(agi)
-#endif
-
 static xfs_failaddr_t
 xfs_agi_verify(
 	struct xfs_buf	*bp)
 {
 	struct xfs_mount *mp = bp->b_target->bt_mount;
 	struct xfs_agi	*agi = XFS_BUF_TO_AGI(bp);
+	int		i;
 
 	if (xfs_sb_version_hascrc(&mp->m_sb)) {
 		if (!uuid_equal(&agi->agi_uuid, &mp->m_sb.sb_meta_uuid))
@@ -2532,7 +2536,13 @@ xfs_agi_verify(
 	if (bp->b_pag && be32_to_cpu(agi->agi_seqno) != bp->b_pag->pag_agno)
 		return __this_address;
 
-	xfs_check_agi_unlinked(agi);
+	for (i = 0; i < XFS_AGI_UNLINKED_BUCKETS; i++) {
+		if (agi->agi_unlinked[i] == NULLAGINO)
+			continue;
+		if (!xfs_verify_ino(mp, be32_to_cpu(agi->agi_unlinked[i])))
+			return __this_address;
+	}
+
 	return NULL;
 }
 

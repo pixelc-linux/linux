@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2006 Silicon Graphics, Inc.
  * All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it would be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write the Free Software Foundation,
- * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -3115,7 +3103,8 @@ xlog_recover_inode_pass2(
 		if ((ldip->di_format != XFS_DINODE_FMT_EXTENTS) &&
 		    (ldip->di_format != XFS_DINODE_FMT_BTREE)) {
 			XFS_CORRUPTION_ERROR("xlog_recover_inode_pass2(3)",
-					 XFS_ERRLEVEL_LOW, mp, ldip);
+					 XFS_ERRLEVEL_LOW, mp, ldip,
+					 sizeof(*ldip));
 			xfs_alert(mp,
 		"%s: Bad regular inode log record, rec ptr "PTR_FMT", "
 		"ino ptr = "PTR_FMT", ino bp = "PTR_FMT", ino %Ld",
@@ -3128,7 +3117,8 @@ xlog_recover_inode_pass2(
 		    (ldip->di_format != XFS_DINODE_FMT_BTREE) &&
 		    (ldip->di_format != XFS_DINODE_FMT_LOCAL)) {
 			XFS_CORRUPTION_ERROR("xlog_recover_inode_pass2(4)",
-					     XFS_ERRLEVEL_LOW, mp, ldip);
+					     XFS_ERRLEVEL_LOW, mp, ldip,
+					     sizeof(*ldip));
 			xfs_alert(mp,
 		"%s: Bad dir inode log record, rec ptr "PTR_FMT", "
 		"ino ptr = "PTR_FMT", ino bp = "PTR_FMT", ino %Ld",
@@ -3139,7 +3129,8 @@ xlog_recover_inode_pass2(
 	}
 	if (unlikely(ldip->di_nextents + ldip->di_anextents > ldip->di_nblocks)){
 		XFS_CORRUPTION_ERROR("xlog_recover_inode_pass2(5)",
-				     XFS_ERRLEVEL_LOW, mp, ldip);
+				     XFS_ERRLEVEL_LOW, mp, ldip,
+				     sizeof(*ldip));
 		xfs_alert(mp,
 	"%s: Bad inode log record, rec ptr "PTR_FMT", dino ptr "PTR_FMT", "
 	"dino bp "PTR_FMT", ino %Ld, total extents = %d, nblocks = %Ld",
@@ -3151,7 +3142,8 @@ xlog_recover_inode_pass2(
 	}
 	if (unlikely(ldip->di_forkoff > mp->m_sb.sb_inodesize)) {
 		XFS_CORRUPTION_ERROR("xlog_recover_inode_pass2(6)",
-				     XFS_ERRLEVEL_LOW, mp, ldip);
+				     XFS_ERRLEVEL_LOW, mp, ldip,
+				     sizeof(*ldip));
 		xfs_alert(mp,
 	"%s: Bad inode log record, rec ptr "PTR_FMT", dino ptr "PTR_FMT", "
 	"dino bp "PTR_FMT", ino %Ld, forkoff 0x%x", __func__,
@@ -3162,7 +3154,8 @@ xlog_recover_inode_pass2(
 	isize = xfs_log_dinode_size(ldip->di_version);
 	if (unlikely(item->ri_buf[1].i_len > isize)) {
 		XFS_CORRUPTION_ERROR("xlog_recover_inode_pass2(7)",
-				     XFS_ERRLEVEL_LOW, mp, ldip);
+				     XFS_ERRLEVEL_LOW, mp, ldip,
+				     sizeof(*ldip));
 		xfs_alert(mp,
 			"%s: Bad inode log record length %d, rec ptr "PTR_FMT,
 			__func__, item->ri_buf[1].i_len, item);
