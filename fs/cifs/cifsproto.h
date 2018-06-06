@@ -544,7 +544,7 @@ int cifs_create_mf_symlink(unsigned int xid, struct cifs_tcon *tcon,
 			   struct cifs_sb_info *cifs_sb,
 			   const unsigned char *path, char *pbuf,
 			   unsigned int *pbytes_written);
-int __cifs_calc_signature(struct smb_rqst *rqst,
+int __cifs_calc_signature(struct smb_rqst *rqst, int start,
 			struct TCP_Server_Info *server, char *signature,
 			struct shash_desc *shash);
 enum securityEnum cifs_select_sectype(struct TCP_Server_Info *,
@@ -556,5 +556,8 @@ int setup_aio_ctx_iter(struct cifs_aio_ctx *ctx, struct iov_iter *iter, int rw);
 int cifs_alloc_hash(const char *name, struct crypto_shash **shash,
 		    struct sdesc **sdesc);
 void cifs_free_hash(struct crypto_shash **shash, struct sdesc **sdesc);
+
+extern void rqst_page_get_length(struct smb_rqst *rqst, unsigned int page,
+				unsigned int *len, unsigned int *offset);
 
 #endif			/* _CIFSPROTO_H */
