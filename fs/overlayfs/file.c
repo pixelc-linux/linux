@@ -168,8 +168,8 @@ static void ovl_file_accessed(struct file *file)
 	if (!upperinode)
 		return;
 
-	if ((!timespec_equal(&inode->i_mtime, &upperinode->i_mtime) ||
-	     !timespec_equal(&inode->i_ctime, &upperinode->i_ctime))) {
+	if ((!timespec64_equal(&inode->i_mtime, &upperinode->i_mtime) ||
+	     !timespec64_equal(&inode->i_ctime, &upperinode->i_ctime))) {
 		inode->i_mtime = upperinode->i_mtime;
 		inode->i_ctime = upperinode->i_ctime;
 	}
