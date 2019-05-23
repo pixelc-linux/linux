@@ -548,7 +548,6 @@ static int ec_device_remove(struct platform_device *pdev)
 	struct cros_ec_dev *ec = dev_get_drvdata(&pdev->dev);
 
 	/* Let the EC take over the lightbar again. */
-	lb_manual_suspend_ctrl(ec, 0);
 
 //	cros_ec_debugfs_remove(ec);
 
