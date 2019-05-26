@@ -2011,8 +2011,6 @@
 
 	gpio-keys {
 		compatible = "gpio-keys";
-	/*	gpio-keys,name = "gpio-keys";*/
-		status = "okay";
 
 		power {
 			label = "Power";

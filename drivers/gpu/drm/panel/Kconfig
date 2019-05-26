@@ -77,6 +77,7 @@ config DRM_PANEL_JDI_LT070ME05000
 	  The panel has a 1200(RGB)×1920 (WUXGA) resolution and uses
 	  24 bit per pixel.
 
+<<<<<<< HEAD
 config DRM_PANEL_JDI_LPM102A188A
 	tristate "JDI LPM102A188A panel (Google Pixel C)"
 	depends on OF
@@ -85,6 +86,8 @@ config DRM_PANEL_JDI_LPM102A188A
 	help
 	  Say Y here if you want to enable support for JDI
 	  panel as found in Google Pixel C (2015) devices.
+=======
+>>>>>>> v5.1
 config DRM_PANEL_KINGDISPLAY_KD097D04
 	tristate "Kingdisplay kd097d04 panel"
 	depends on OF
