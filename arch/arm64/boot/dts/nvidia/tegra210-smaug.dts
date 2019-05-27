@@ -28,7 +28,7 @@
 	};
 
 	chosen {
-		bootargs = "cros_legacy init=/init rw fbcon loglevel=0 debug earlyprintk drm.atomic=1 no_console_suspend firmware_class.path=/lib/firmware";
+		bootargs = "cros_legacy init=/init rw fbcon loglevel=0 earlyprintk drm.atomic=1 no_console_suspend firmware_class.path=/lib/firmware";
 	};
 
 	memory {
@@ -1727,7 +1727,7 @@
 			};
 		};
 
-		max77621_cpu: pmic@1b {
+		/*max77621_cpu: pmic@1b {
 				compatible = "maxim,max77621";
 				reg = <0x1b>;
 				interrupt-parent = <&gpio>;
@@ -1743,7 +1743,7 @@
 				maxim,enable-active-discharge;
 				maxim,enable-bias-control;
 				maxim,enable-etr;
-		};
+		};*/
 
 		max77621_gpu: pmic@1c {
 				compatible = "maxim,max77621";
