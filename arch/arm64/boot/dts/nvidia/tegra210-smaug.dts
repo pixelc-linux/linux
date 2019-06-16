@@ -123,10 +123,10 @@
 	};
 
 	pinmux: pinmux@700008d4 {
-		pinctrl-names = "bootloader";
-		pinctrl-0 = <&pinmux_boot>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinmux_default>;
 
-		pinmux_boot: pinmux {
+		pinmux_default: common {
 			pex_l0_rst_n_pa0 {
 				nvidia,pins = "pex_l0_rst_n_pa0";
 				nvidia,function = "rsvd1";
@@ -1464,8 +1464,8 @@
 			interrupts = <TEGRA_GPIO(Y, 1) IRQ_TYPE_LEVEL_LOW>;
 			regulator-always-on;
 			regulator-boot-on;
-			regulator-min-microvolt = <850000>;
-			regulator-max-microvolt = <1170000>;
+			regulator-min-microvolt = <800000>;
+			regulator-max-microvolt = <1231250>;
 			regulator-name = "PPVAR_CPU";
 			regulator-ramp-delay = <12500>;
 			maxim,dvs-default-state = <1>;
@@ -1482,7 +1482,7 @@
 			interrupt-parent = <&gpio>;
 			interrupts = <TEGRA_GPIO(A, 6) IRQ_TYPE_LEVEL_LOW>;
 			regulator-name = "PPVAR_GPU";
-			regulator-min-microvolt = <840000>;
+			regulator-min-microvolt = <800000>;
 			regulator-max-microvolt = <1150000>;
 			regulator-ramp-delay = <12500>;
 			maxim,externally-enable;
@@ -1912,8 +1912,8 @@
 
 	sdhci1: sdhci@700b0200 { /* WiFi/BT on this bus */
 		power-gpios = <&gpio TEGRA_GPIO(H, 1) GPIO_ACTIVE_HIGH>;
+		vqmmc-supply = <&pp1800>;
 		vmmc-supply = <&pp3300>;
-		no-1-8-v;
 		bus-width = <4>;
 		keep-power-in-suspend;
 		non-removable;
@@ -1925,7 +1925,7 @@
 		non-removable;
 		mmc-hs200-1_8v;
 		vqmmc-supply = <&pp1800>;
-		vmmc-supply = <&pp1800>;
+		vmmc-supply = <&pp3300>;
 		keep-power-in-suspend;
 		status = "okay";
 	};
@@ -1969,26 +1969,26 @@
 
 	cpus {
 		cpu@0 {
-			compatible = "arm,cortex-a57", "arm,armv8";
+			compatible = "arm,cortex-a57";
 			vdd-cpu-supply = <&max77621_cpu>;
 			enable-method = "psci";
 			next-level-cache = <&L2>;
 		};
 
 		cpu@1 {
-			compatible = "arm,cortex-a57", "arm,armv8";
+			compatible = "arm,cortex-a57";
 			enable-method = "psci";
 			next-level-cache = <&L2>;
 		};
 
 		cpu@2 {
-			compatible = "arm,cortex-a57", "arm,armv8";
+			compatible = "arm,cortex-a57";
 			enable-method = "psci";
 			next-level-cache = <&L2>;
 		};
 
 		cpu@3 {
-			compatible = "arm,cortex-a57", "arm,armv8";
+			compatible = "arm,cortex-a57";
 			enable-method = "psci";
 			next-level-cache = <&L2>;
 		};
