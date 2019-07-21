@@ -28,7 +28,7 @@
 	};
 
 	chosen {
-		bootargs = "cros_legacy init=/init rw fbcon loglevel=0 debug earlyprintk drm.atomic=1 no_console_suspend firmware_class.path=/lib/firmware";
+		bootargs = "cros_legacy init=/init rw fbcon loglevel=0 earlyprintk drm.atomic=1 no_console_suspend firmware_class.path=/lib/firmware";
 	};
 
 	memory {
