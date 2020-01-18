@@ -83,10 +83,109 @@
 		};
 	};
 
-  gpu@57000000 {
+  	gpu@57000000 {
 		status = "okay";
-		vdd-supply = <&max77620_gpu>;
+		vdd-supply = <&max77621_gpu>;
 	};
+
+	sound: sound {
+		compatible = "nvidia,tegra-audio-t210ref-mobile-rt5677";
+		nvidia,model = "tegra-snd-t210ref-mobile-rt5677";
+		nvidia,spkr-en-gpios = <&rt5677 4 GPIO_ACTIVE_HIGH>;
+		nvidia,dmic-clk-en-gpios = <&rt5677 2 GPIO_ACTIVE_HIGH>;
+		nvidia,num-codec-link = <1>;
+		edp-consumer-name = "codec+speaker";
+		clocks = <&tegra_car TEGRA210_CLK_PLL_A>,
+					<&tegra_car TEGRA210_CLK_PLL_A_OUT0>,
+					<&tegra_car TEGRA210_CLK_EXTERN1>,
+					<&tegra_car TEGRA210_CLK_CLK_OUT_1>,
+					<&tegra_car TEGRA210_CLK_EXTERN2>,
+					<&tegra_car TEGRA210_CLK_CLK_OUT_2>;
+		clock-names = "pll_a", "pll_a_out0", "extern1", "clk_out_1", "extern2", "clk_out_2";
+		nvidia,audio-routing =
+			"Headphone Jack", "HPOL",
+			"Headphone Jack", "HPOR",
+			"MICBIAS",  "Mic Jack",
+			"MIC", "Mic Jack",
+			"DMIC L1", "Int Mic",
+			"DMIC R1", "Int Mic",
+			"DMIC L2", "Int Mic",
+			"DMIC R2", "Int Mic",
+			"Int Spk", "Speaker";
+		nvidia,xbar = <&tegra_axbar>;
+		nvidia,dai-link-1 {
+			link-name = "rt5677-playback";
+			cpu-dai = <&tegra_i2s1>;
+			codec-dai = <&rt5677>;
+			cpu-dai-name = "I2S1";
+			codec-dai-name = "rt5677-aif1";
+			tx-mask = <0xFF>;
+			rx-mask = <0xFF>;
+			format = "dsp_a";
+			bitclock-slave;
+			frame-slave;
+			bitclock-noninversion;
+			frame-inversion;
+			bit-format = "s16_le";
+			bclk_ratio = <0>;
+			srate = <48000>;
+			num-channel = <4>;
+		};
+	};
+
+	tegra_axbar: ahub {
+		compatible = "nvidia,tegra210-axbar";
+		reg = <0x0 0x702d0800 0x0 0x800>;
+		status = "disabled";
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x702d0000 0x0 0x702d0000 0x00010000>;
+
+		tegra_admaif: admaif@0x702d0000 {
+			compatible = "nvidia,tegra210-admaif";
+			reg = <0x702d0000 0x800>;
+			dmas = <&adma 1>, <&adma 1>, <&adma 2>, <&adma 2>,
+				<&adma 3>, <&adma 3>, <&adma 4>, <&adma 4>,
+				<&adma 5>, <&adma 5>, <&adma 6>, <&adma 6>,
+				<&adma 7>, <&adma 7>, <&adma 8>, <&adma 8>,
+				<&adma 9>, <&adma 9>, <&adma 10>, <&adma 10>;
+			dma-names = "rx1", "tx1", "rx2", "tx2", "rx3", "tx3",
+				"rx4", "tx4", "rx5", "tx5", "rx6", "tx6",
+				"rx7", "tx7", "rx8", "tx8", "rx9", "tx9",
+				"rx10", "tx10";
+			status = "disabled";
+		};
+    };
+
+    tegra_i2s1: i2s@702d1000 {
+		compatible = "nvidia,tegra210-i2s";
+		reg = <0x702d1000 0x100>;
+		nvidia,ahub-i2s-id = <0>;
+		status = "disabled";
+	};
+
+	spi1: spi@7000d400 {
+		compatible = "nvidia,tegra210-spi";
+		reg = <0x0 0x7000d400 0x0 0x200>;
+		interrupts = <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		clocks = <&tegra_car TEGRA210_CLK_SBC1>;
+		clock-names = "spi";
+		resets = <&tegra_car 41>;
+		reset-names = "spi";
+		dmas = <&apbdma 15>, <&apbdma 15>;
+		dma-names = "rx", "tx";
+		status = "okay";
+
+		codec@0 {
+			compatible = "realtek,rt5677-spi";
+			reg = <0>;
+			spi-max-frequency = <24000000>;
+		};
+	};
+
 
   serial@70006000 {
 		status = "okay";
@@ -1442,26 +1541,7 @@
 		status = "okay";
 		clock-frequency = <1000000>;
 
-		max77621_cpu: max77621@1b {
-			compatible = "maxim,max77621";
-			reg = <0x1b>;
-			interrupt-parent = <&gpio>;
-			interrupts = <TEGRA_GPIO(Y, 1) IRQ_TYPE_LEVEL_LOW>;
-			regulator-always-on;
-			regulator-boot-on;
-			regulator-min-microvolt = <800000>;
-			regulator-max-microvolt = <1231250>;
-			regulator-name = "PPVAR_CPU";
-			regulator-ramp-delay = <12500>;
-			maxim,dvs-default-state = <1>;
-			maxim,enable-active-discharge;
-			maxim,enable-bias-control;
-			maxim,enable-etr;
-			maxim,enable-gpio = <&max77620_gpu 5 0>;
-			maxim,externally-enable;
-		};
-
-    max77620_gpu: max77620@3c {
+    	max77620_cpu_gpu: max77620@3c {
 			compatible = "maxim,max77620";
 			reg = <0x3c>;
 			interrupts = <GIC_SPI 86 IRQ_TYPE_LEVEL_HIGH>;
@@ -1507,7 +1587,7 @@
 				};
 			};
 
-      watchdog {
+      		watchdog {
 				maxim,wdt-timeout = <16>;
 				maxim,wdt-clear-time = <13>;
 				status = "disabled";
@@ -1540,10 +1620,10 @@
 					regulator-name = "PPVAR_SOC";
 					regulator-min-microvolt = <825000>;
 					regulator-max-microvolt = <1125000>;
-          regulator-enable-ramp-delay = <146>;
-          regulator-disable-ramp-delay = <4080>;
-          regulator-ramp-delay = <27500>;
-          regulator-ramp-delay-scale = <300>;
+					regulator-enable-ramp-delay = <146>;
+					regulator-disable-ramp-delay = <4080>;
+					regulator-ramp-delay = <27500>;
+					regulator-ramp-delay-scale = <300>;
 					regulator-always-on;
 					regulator-boot-on;
 					maxim,active-fps-source = <MAX77620_FPS_SRC_1>;
@@ -1715,6 +1795,41 @@
 				};
 			};
 		};
+
+    	max77621_cpu: pmic@1b {
+				compatible = "maxim,max77621";
+				reg = <0x1b>;
+				interrupt-parent = <&gpio>;
+				interrupts = <TEGRA_GPIO(Y, 1) IRQ_TYPE_LEVEL_LOW>;
+				regulator-name = "PPVAR_CPU";
+				regulator-min-microvolt = <850000>;
+				regulator-max-microvolt = <1170000>;
+				regulator-ramp-delay = <12500>;
+				maxim,externally-enable;
+				maxim,enable-gpio = <&max77620_cpu_gpu 5 0>;
+				maxim,dvs-default-state = <1>;
+				regulator-always-on;
+				maxim,enable-active-discharge;
+				maxim,enable-bias-control;
+				maxim,enable-etr;
+		};
+
+		max77621_gpu: pmic@1c {
+				compatible = "maxim,max77621";
+				reg = <0x1c>;
+				interrupt-parent = <&gpio>;
+				interrupts = <TEGRA_GPIO(A, 6) IRQ_TYPE_LEVEL_LOW>;
+				regulator-name = "PPVAR_GPU";
+				regulator-min-microvolt = <840000>;
+				regulator-max-microvolt = <1150000>;
+				regulator-ramp-delay = <12500>;
+				maxim,externally-enable;
+				maxim,enable-gpio = <&max77620_cpu_gpu 6 0>;
+				maxim,dvs-default-state = <1>;
+				maxim,disable-etr;
+				maxim,enable-active-discharge;
+				maxim,enable-bias-control;
+		};
 	};
 
 	i2c@7000d100 {
@@ -1745,7 +1860,8 @@
 			status = "disabled";
 		};
 
-		audio-codec@2d {
+
+    	rt5677: audio-codec@2d {
 			compatible = "realtek,rt5677";
 			reg = <0x2d>;
 			interrupt-parent = <&gpio>;
