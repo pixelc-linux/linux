@@ -1870,7 +1870,7 @@
 		};
 	};
 
-	sdhci@700b0200 { /* WiFi/BT on this bus */
+  sdhci@700b0200 { /* WiFi/BT on this bus */
 		power-gpios = <&gpio TEGRA_GPIO(H, 1) GPIO_ACTIVE_HIGH>;
 		vmmc-supply = <&pp3300>;
 		no-1-8-v;
@@ -1883,10 +1883,6 @@
 	sdhci@700b0600 {
 		bus-width = <8>;
 		non-removable;
-		mmc-hs200-1_8v;
-		vqmmc-supply = <&pp1800>;
-		vmmc-supply = <&pp1800>;
-		keep-power-in-suspend;
 		status = "okay";
 	};
 
