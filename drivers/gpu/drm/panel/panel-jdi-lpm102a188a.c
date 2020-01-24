@@ -14,13 +14,15 @@
 #include <linux/backlight.h>
 #include <linux/debugfs.h>
 #include <linux/gpio.h>
+#include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/of_gpio.h>
 #include <linux/gpio/machine.h>
 #include <linux/regulator/consumer.h>
 
-#include <drm/drmP.h>
+#include <drm/drm_print.h>
 #include <drm/drm_crtc.h>
+#include <drm/drm_device.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_panel.h>
 
@@ -83,6 +85,30 @@ static int panel_jdi_write_display_brightness(struct panel_jdi *jdi)
 			MIPI_DCS_RSP_WRITE_DISPLAY_BRIGHTNESS, &data, 1);
 	if (ret < 1) {
 		DRM_INFO("failed to write display brightness: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int mipi_dsi_dcs_set_address_mode(struct panel_jdi *jdi)
+{
+	int ret;
+	u8 data;
+
+	data = 0;
+
+	ret = mipi_dsi_dcs_write(jdi->link1,
+			MIPI_DCS_SET_ADDRESS_MODE, &data, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write address mode: %d\n", ret);
+		return ret;
+	}
+
+	ret = mipi_dsi_dcs_write(jdi->link2,
+			MIPI_DCS_SET_ADDRESS_MODE, &data, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write address mode: %d\n", ret);
 		return ret;
 	}
 
@@ -338,15 +364,7 @@ static int panel_jdi_prepare(struct drm_panel *panel)
 		goto poweroff;
 	}
 
-	err = mipi_dsi_dcs_set_address_mode(jdi->link1, false, false, false,
-			false, false, false, false, false);
-	if (err < 0) {
-		dev_err(panel->dev, "failed to set address mode: %d\n", err);
-		goto poweroff;
-	}
-
-	err = mipi_dsi_dcs_set_address_mode(jdi->link2, false, false,
-			false, false, false, false, false, false);
+	err = mipi_dsi_dcs_set_address_mode(jdi);
 	if (err < 0) {
 		dev_err(panel->dev, "failed to set address mode: %d\n", err);
 		goto poweroff;
@@ -642,25 +660,12 @@ static int jdi_panel_add(struct panel_jdi *jdi)
 		return err;
 	}
 
-	drm_panel_init(&jdi->base);
-	jdi->base.dev = &jdi->link1->dev;
-	jdi->base.funcs = &panel_jdi_funcs;
-
-	err = drm_panel_add(&jdi->base);
-	if (err < 0) {
-		DRM_INFO("drm_panel_add failed: %d\n", err);
-		goto put_backlight;
-	}
+	drm_panel_init(&jdi->base, &jdi->link1->dev, &panel_jdi_funcs, DRM_MODE_CONNECTOR_DSI);
+	return drm_panel_add(&jdi->base);
 
 	panel_jdi_debugfs_init(jdi);
 
 	return 0;
-
-put_backlight:
-	if (jdi->backlight)
-		put_device(&jdi->backlight->dev);
-
-	return err;
 }
 
 static void jdi_panel_del(struct panel_jdi *jdi)
@@ -746,7 +751,6 @@ static int panel_jdi_dsi_remove(struct mipi_dsi_device *dsi)
 	if (err < 0)
 		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n", err);
 
-	drm_panel_detach(&jdi->base);
 	jdi_panel_del(jdi);
 
 	return 0;
