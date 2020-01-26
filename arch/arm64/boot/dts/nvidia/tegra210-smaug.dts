@@ -116,7 +116,7 @@
 		status = "okay";
 
 		bluetooth {
-			compatible = "brcm,bcm4354-bt";
+			compatible = "brcm,bcm43540-bt";
 			shutdown-gpios = <&gpio TEGRA_GPIO(H, 4) GPIO_ACTIVE_HIGH>;
 			host-wakeup-gpios = <&gpio TEGRA_GPIO(H, 5) GPIO_ACTIVE_LOW>;
 			device-wakeup-gpios = <&gpio TEGRA_GPIO(H, 3) GPIO_ACTIVE_HIGH>;
