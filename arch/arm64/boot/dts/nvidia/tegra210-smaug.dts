@@ -20,8 +20,8 @@
 	};
 
 	chosen {
-		bootargs = "cros_legacy init=/init rw fbcon loglevel=0 debug earlyprintk drm.atomic=1 no_console_suspend firmware_class.path=/lib/firmware";
-                stdout-path = "serial0:115200n8";
+		bootargs = "init=/init rw fbcon earlyprintk no_console_suspend firmware_class.path=/lib/firmware";
+        stdout-path = "serial0:115200n8";
 	};
 
 	memory {
@@ -1412,10 +1412,16 @@
 		status = "okay";
 
 		bluetooth {
+			/*pinctrl-names = "default";
+			pinctrl-0 = <&bt_wake_ap_ph5>, <&bt_enable_l>,
+				    <&bt_dev_wake>;*/
+	
 			compatible = "brcm,bcm43540-bt";
 			shutdown-gpios = <&gpio TEGRA_GPIO(H, 4) GPIO_ACTIVE_HIGH>;
 			host-wakeup-gpios = <&gpio TEGRA_GPIO(H, 5) GPIO_ACTIVE_LOW>;
 			device-wakeup-gpios = <&gpio TEGRA_GPIO(H, 3) GPIO_ACTIVE_HIGH>;
+			max-speed		= <3000000>;
+			brcm,bt-pcm-int-params	= [01 02 00 01 01];
 		};
 	};
 
@@ -1862,7 +1868,7 @@
 		non-removable;
 		mmc-hs200-1_8v;
 		vqmmc-supply = <&pp1800>;
-		vmmc-supply = <&pp3300>;
+		vmmc-supply = <&pp1800>;
 		keep-power-in-suspend;
 		status = "okay";
 	};
