@@ -20,8 +20,8 @@
 	};
 
 	chosen {
-		bootargs = "init=/init rw fbcon earlyprintk no_console_suspend firmware_class.path=/lib/firmware";
-        stdout-path = "serial0:115200n8";
+    bootargs = "cros_legacy init=/init rw fbcon loglevel=0 debug earlyprintk drm.atomic=1 no_console_suspend firmware_class.path=/lib/firmware";
+    stdout-path = "serial0:115200n8";
 	};
 
 	memory {
