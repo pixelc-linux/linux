@@ -20,7 +20,7 @@
 	};
 
 	chosen {
-		bootargs = "init=/init rw fbcon earlyprintk no_console_suspend firmware_class.path=/lib/firmware";
+		bootargs = "init=/init rw fbcon debug";
         stdout-path = "serial0:115200n8";
 	};
 
@@ -1841,6 +1841,9 @@
 	padctl@7009f000 {
 		status = "okay";
 
+		dvddio-pex-supply = <&avddio_1v05>;
+		hvddio-pex-supply = <&pp1800>;
+		avdd-usb-supply = <&pp3300>;
 		avdd-pll-utmip-supply = <&pp1800>;
 		avdd-pll-uerefe-supply = <&pp1050_avdd>;
 		dvdd-pex-pll-supply = <&avddio_1v05>;
@@ -1862,6 +1865,30 @@
 				status = "okay";
 
 				lanes {
+					pcie-0 {
+						nvidia,function = "pcie-x1";
+						status = "okay";
+					};
+					pcie-1 {
+						nvidia,function = "pcie-x4";
+						status = "okay";
+					};
+					pcie-2 {
+						nvidia,function = "pcie-x4";
+						status = "okay";
+					};
+					pcie-3 {
+						nvidia,function = "pcie-x4";
+						status = "okay";
+					};
+					pcie-4 {
+						nvidia,function = "pcie-x4";
+						status = "okay";
+					};
+					pcie-5 {
+						nvidia,function = "usb3-ss";
+						status = "okay";
+					};
 					pcie-6 {
 						nvidia,function = "usb3-ss";
 						status = "okay";
@@ -1875,10 +1902,12 @@
 				status = "okay";
 				vbus-supply = <&usbc_vbus>;
 				mode = "otg";
+				usb-role-switch = "true";
 			};
 
 			usb3-0 {
 				nvidia,usb2-companion = <0>;
+				vbus-supply = <&usbc_vbus>;
 				status = "okay";
 			};
 		};
