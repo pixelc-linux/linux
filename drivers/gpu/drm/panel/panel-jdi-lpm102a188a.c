@@ -1,50 +1,54 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) 2016 InforceComputing
- * Author: Vinay Simha BN <simhavcs@gmail.com>
+ * Copyright (C) 2014 Google, Inc.
  *
- * Copyright (C) 2016 Linaro Ltd
- * Author: Sumit Semwal <sumit.semwal@linaro.org>
+ * This software is licensed under the terms of the GNU General Public
+ * License version 2, as published by the Free Software Foundation, and
+ * may be copied, distributed, and modified under those terms.
  *
- * From internet archives, the panel for Nexus 7 2nd Gen, 2013 model is a
- * JDI model LT070ME05000, and its data sheet is at:
- * http://panelone.net/en/7-0-inch/JDI_LT070ME05000_7.0_inch-datasheet
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/backlight.h>
+#include <linux/debugfs.h>
+#include <linux/gpio.h>
 #include <linux/delay.h>
-#include <linux/gpio/consumer.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_gpio.h>
+#include <linux/gpio/machine.h>
 #include <linux/regulator/consumer.h>
+
+#include <drm/drm_print.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_mipi_dsi.h>
+#include <drm/drm_panel.h>
+
+#include <drm/panel/panel-jdi-lpm102a188a.h>
 
 #include <video/mipi_display.h>
 
-#include <drm/drm_crtc.h>
-#include <drm/drm_mipi_dsi.h>
-#include <drm/drm_modes.h>
-#include <drm/drm_panel.h>
-
-static const char * const regulator_names[] = {
-	"vddp",
-	"iovcc"
-};
-
 struct jdi_panel {
 	struct drm_panel base;
-	struct mipi_dsi_device *dsi;
+	struct mipi_dsi_device *link1;
+	struct mipi_dsi_device *link2;
 
-	struct regulator_bulk_data supplies[ARRAY_SIZE(regulator_names)];
-
-	struct gpio_desc *enable_gpio;
-	struct gpio_desc *reset_gpio;
-	struct gpio_desc *dcdc_en_gpio;
+	struct regulator *supply;
+	struct regulator *ddi_supply;
 	struct backlight_device *backlight;
+	int enable_gpio;
+	unsigned long enable_gpio_flags;
+	int reset_gpio;
+	unsigned long reset_gpio_flags;
+
+	const struct drm_display_mode *mode;
 
 	bool prepared;
 	bool enabled;
 
-	const struct drm_display_mode *mode;
+	struct dentry *debugfs_entry;
+	u8 current_register;
 };
 
 static inline struct jdi_panel *to_jdi_panel(struct drm_panel *panel)
@@ -52,128 +56,89 @@ static inline struct jdi_panel *to_jdi_panel(struct drm_panel *panel)
 	return container_of(panel, struct jdi_panel, base);
 }
 
-static int jdi_panel_init(struct jdi_panel *jdi)
+static void jdi_wait_frames(struct jdi_panel *jdi, unsigned int frames)
 {
-	struct mipi_dsi_device *dsi = jdi->dsi;
-	struct device *dev = &jdi->dsi->dev;
+	unsigned int refresh = drm_mode_vrefresh(jdi->mode);
+
+	if (WARN_ON(frames > refresh))
+		return;
+
+	msleep(1000 / (refresh / frames));
+}
+
+static int jdi_panel_write_display_brightness(struct jdi_panel *jdi)
+{
 	int ret;
+	u8 data;
 
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	data = RSP_WRITE_DISPLAY_BRIGHTNESS(0xFF);
 
-	ret = mipi_dsi_dcs_soft_reset(dsi);
-	if (ret < 0)
-		return ret;
-
-	usleep_range(10000, 20000);
-
-	ret = mipi_dsi_dcs_set_pixel_format(dsi, MIPI_DCS_PIXEL_FMT_24BIT << 4);
-	if (ret < 0) {
-		dev_err(dev, "failed to set pixel format: %d\n", ret);
+	ret = mipi_dsi_dcs_write(jdi->link1,
+			MIPI_DCS_RSP_WRITE_DISPLAY_BRIGHTNESS, &data, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write display brightness: %d\n", ret);
 		return ret;
 	}
 
-	ret = mipi_dsi_dcs_set_column_address(dsi, 0, jdi->mode->hdisplay - 1);
-	if (ret < 0) {
-		dev_err(dev, "failed to set column address: %d\n", ret);
-		return ret;
-	}
-
-	ret = mipi_dsi_dcs_set_page_address(dsi, 0, jdi->mode->vdisplay - 1);
-	if (ret < 0) {
-		dev_err(dev, "failed to set page address: %d\n", ret);
-		return ret;
-	}
-
-	/*
-	 * BIT(5) BCTRL = 1 Backlight Control Block On, Brightness registers
-	 *                  are active
-	 * BIT(3) BL = 1    Backlight Control On
-	 * BIT(2) DD = 0    Display Dimming is Off
-	 */
-	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY,
-				 (u8[]){ 0x24 }, 1);
-	if (ret < 0) {
-		dev_err(dev, "failed to write control display: %d\n", ret);
-		return ret;
-	}
-
-	/* CABC off */
-	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_WRITE_POWER_SAVE,
-				 (u8[]){ 0x00 }, 1);
-	if (ret < 0) {
-		dev_err(dev, "failed to set cabc off: %d\n", ret);
-		return ret;
-	}
-
-	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
-	if (ret < 0) {
-		dev_err(dev, "failed to set exit sleep mode: %d\n", ret);
-		return ret;
-	}
-
-	msleep(120);
-
-	ret = mipi_dsi_generic_write(dsi, (u8[]){0xB0, 0x00}, 2);
-	if (ret < 0) {
-		dev_err(dev, "failed to set mcap: %d\n", ret);
-		return ret;
-	}
-
-	mdelay(10);
-
-	/* Interface setting, video mode */
-	ret = mipi_dsi_generic_write(dsi, (u8[])
-				     {0xB3, 0x26, 0x08, 0x00, 0x20, 0x00}, 6);
-	if (ret < 0) {
-		dev_err(dev, "failed to set display interface setting: %d\n"
-			, ret);
-		return ret;
-	}
-
-	mdelay(20);
-
-	ret = mipi_dsi_generic_write(dsi, (u8[]){0xB0, 0x03}, 2);
-	if (ret < 0) {
-		dev_err(dev, "failed to set default values for mcap: %d\n"
-			, ret);
+	ret = mipi_dsi_dcs_write(jdi->link2,
+			MIPI_DCS_RSP_WRITE_DISPLAY_BRIGHTNESS, &data, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write display brightness: %d\n", ret);
 		return ret;
 	}
 
 	return 0;
 }
 
-static int jdi_panel_on(struct jdi_panel *jdi)
+static int jdi_panel_write_control_display(struct jdi_panel *jdi)
 {
-	struct mipi_dsi_device *dsi = jdi->dsi;
-	struct device *dev = &jdi->dsi->dev;
 	int ret;
+	u8 data;
 
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	data = RSP_WRITE_CONTROL_DISPLAY_BL_ON |
+			RSP_WRITE_CONTROL_DISPLAY_BCTRL_LEDPWM;
 
-	ret = mipi_dsi_dcs_set_display_on(dsi);
-	if (ret < 0)
-		dev_err(dev, "failed to set display on: %d\n", ret);
+	ret = mipi_dsi_dcs_write(jdi->link1, MIPI_DCS_RSP_WRITE_CONTROL_DISPLAY,
+			&data, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write control display: %d\n", ret);
+		return ret;
+	}
 
-	return ret;
+	ret = mipi_dsi_dcs_write(jdi->link2, MIPI_DCS_RSP_WRITE_CONTROL_DISPLAY,
+			&data, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write control display: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
 }
 
-static void jdi_panel_off(struct jdi_panel *jdi)
+static int jdi_panel_write_adaptive_brightness_control(struct jdi_panel *jdi)
 {
-	struct mipi_dsi_device *dsi = jdi->dsi;
-	struct device *dev = &jdi->dsi->dev;
 	int ret;
+	u8 data;
 
-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	data = RSP_WRITE_ADAPTIVE_BRIGHTNESS_CONTROL_C_VIDEO;
 
-	ret = mipi_dsi_dcs_set_display_off(dsi);
-	if (ret < 0)
-		dev_err(dev, "failed to set display off: %d\n", ret);
+	ret = mipi_dsi_dcs_write(jdi->link1,
+			MIPI_DCS_RSP_WRITE_ADAPTIVE_BRIGHTNESS_CONTROL, &data,
+			1);
+	if (ret < 1) {
+		DRM_INFO("failed to set adaptive brightness ctrl: %d\n", ret);
+		return ret;
+	}
 
-	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
-	if (ret < 0)
-		dev_err(dev, "failed to enter sleep mode: %d\n", ret);
+	ret = mipi_dsi_dcs_write(jdi->link2,
+			MIPI_DCS_RSP_WRITE_ADAPTIVE_BRIGHTNESS_CONTROL, &data,
+			1);
+	if (ret < 1) {
+		DRM_INFO("failed to set adaptive brightness ctrl: %d\n", ret);
+		return ret;
+	}
 
-	msleep(100);
+	return 0;
 }
 
 static int jdi_panel_disable(struct drm_panel *panel)
@@ -193,25 +158,87 @@ static int jdi_panel_disable(struct drm_panel *panel)
 static int jdi_panel_unprepare(struct drm_panel *panel)
 {
 	struct jdi_panel *jdi = to_jdi_panel(panel);
-	struct device *dev = &jdi->dsi->dev;
 	int ret;
 
 	if (!jdi->prepared)
 		return 0;
 
-	jdi_panel_off(jdi);
+	jdi_wait_frames(jdi, 2);
 
-	ret = regulator_bulk_disable(ARRAY_SIZE(jdi->supplies), jdi->supplies);
+	ret = mipi_dsi_dcs_set_display_off(jdi->link1);
 	if (ret < 0)
-		dev_err(dev, "regulator disable failed, %d\n", ret);
+		DRM_INFO("failed to set display off: %d\n", ret);
+	ret = mipi_dsi_dcs_set_display_off(jdi->link2);
+	if (ret < 0)
+		DRM_INFO("failed to set display off: %d\n", ret);
 
-	gpiod_set_value(jdi->enable_gpio, 0);
+	/* Specified by JDI @ 50ms, subject to change */
+	msleep(50);
 
-	gpiod_set_value(jdi->reset_gpio, 1);
+	ret = mipi_dsi_dcs_enter_sleep_mode(jdi->link1);
+	if (ret < 0)
+		DRM_INFO("failed to enter sleep mode: %d\n", ret);
+	ret = mipi_dsi_dcs_enter_sleep_mode(jdi->link2);
+	if (ret < 0)
+		DRM_INFO("failed to enter sleep mode: %d\n", ret);
 
-	gpiod_set_value(jdi->dcdc_en_gpio, 0);
+	/* Specified by JDI @ 150ms, subject to change */
+	msleep(150);
+
+	gpio_set_value(jdi->reset_gpio,
+		(jdi->reset_gpio_flags & GPIO_ACTIVE_LOW) ? 0 : 1);
+
+	/* T4 = 1ms */
+	usleep_range(1000, 3000);
+
+	gpio_set_value(jdi->enable_gpio,
+		(jdi->enable_gpio_flags & GPIO_ACTIVE_LOW) ? 1 : 0);
+
+	/* T5 = 2ms */
+	usleep_range(2000, 4000);
+
+	regulator_disable(jdi->ddi_supply);
+
+	/* T6 = 2ms */
+	usleep_range(5000, 6000);
+
+	regulator_disable(jdi->supply);
 
 	jdi->prepared = false;
+
+	return 0;
+}
+
+static int jdi_setup_symmetrical_split(struct mipi_dsi_device *left,
+					 struct mipi_dsi_device *right,
+					 const struct drm_display_mode *mode)
+{
+	int err;
+
+	err = mipi_dsi_dcs_set_column_address(left, 0, mode->hdisplay / 2 - 1);
+	if (err < 0) {
+		dev_err(&left->dev, "failed to set column address: %d\n", err);
+		return err;
+	}
+
+
+	err = mipi_dsi_dcs_set_column_address(right, 0, mode->hdisplay / 2 - 1);
+	if (err < 0) {
+		dev_err(&right->dev, "failed to set column address: %d\n", err);
+		return err;
+	}
+
+	err = mipi_dsi_dcs_set_page_address(left, 0, mode->vdisplay - 1);
+	if (err < 0) {
+		dev_err(&left->dev, "failed to set page address: %d\n", err);
+		return err;
+	}
+
+	err = mipi_dsi_dcs_set_page_address(right, 0, mode->vdisplay - 1);
+	if (err < 0) {
+		dev_err(&right->dev, "failed to set page address: %d\n", err);
+		return err;
+	}
 
 	return 0;
 }
@@ -219,57 +246,182 @@ static int jdi_panel_unprepare(struct drm_panel *panel)
 static int jdi_panel_prepare(struct drm_panel *panel)
 {
 	struct jdi_panel *jdi = to_jdi_panel(panel);
-	struct device *dev = &jdi->dsi->dev;
-	int ret;
+	u8 format = MIPI_DCS_PIXEL_FMT_24BIT;
+	int err;
 
 	if (jdi->prepared)
 		return 0;
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(jdi->supplies), jdi->supplies);
-	if (ret < 0) {
-		dev_err(dev, "regulator enable failed, %d\n", ret);
-		return ret;
+
+	if (!jdi->enabled) {
+		gpio_set_value(jdi->enable_gpio,
+			(jdi->enable_gpio_flags & GPIO_ACTIVE_LOW) ? 0 : 1);
+
+		/* T3 = 10ms */
+		usleep_range(10000, 15000);
+
+		gpio_set_value(jdi->reset_gpio,
+			(jdi->reset_gpio_flags & GPIO_ACTIVE_LOW) ? 1 : 0);
+
+		/* Specified by JDI @ 3ms, subject to change */
+		usleep_range(3000, 5000);
 	}
 
-	msleep(20);
+	err = regulator_enable(jdi->supply);
+	if (err < 0) {
+		DRM_INFO("failed to enable supply: %d\n", err);
+		return err;
+	}
 
-	gpiod_set_value(jdi->dcdc_en_gpio, 1);
-	usleep_range(10, 20);
+	/* T1 = 2ms */
+	usleep_range(2000, 4000);
 
-	gpiod_set_value(jdi->reset_gpio, 0);
-	usleep_range(10, 20);
+	err = regulator_enable(jdi->ddi_supply);
+	if (err < 0) {
+		DRM_INFO("failed to enable ddi_supply: %d\n", err);
+		return err;
+	}
 
-	gpiod_set_value(jdi->enable_gpio, 1);
-	usleep_range(10, 20);
+	/* T2 = 1ms */
+	usleep_range(1000, 3000);
 
-	ret = jdi_panel_init(jdi);
-	if (ret < 0) {
-		dev_err(dev, "failed to init panel: %d\n", ret);
+	/*
+	 * TODO: The device supports both left-right and even-odd split
+	 * configurations, but this driver currently supports only the left-
+	 * right split. To support a different mode a mechanism needs to be
+	 * put in place to communicate the configuration back to the DSI host
+	 * controller.
+	 */
+	err = jdi_setup_symmetrical_split(jdi->link1, jdi->link2,
+					    jdi->mode);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set up symmetrical split: %d\n",
+			err);
 		goto poweroff;
 	}
 
-	ret = jdi_panel_on(jdi);
-	if (ret < 0) {
-		dev_err(dev, "failed to set panel on: %d\n", ret);
+	err = mipi_dsi_dcs_exit_sleep_mode(jdi->link1);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to exit sleep mode: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_exit_sleep_mode(jdi->link2);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to exit sleep mode: %d\n", err);
+		goto poweroff;
+	}
+	msleep(5); 
+
+	err = mipi_dsi_dcs_set_tear_scanline(jdi->link1,
+					     jdi->mode->vdisplay - 16);
+	if (err < 0) {
+		DRM_ERROR("failed to set tear scanline: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_set_tear_scanline(jdi->link2,
+					     jdi->mode->vdisplay - 16);
+	if (err < 0) {
+		DRM_ERROR("failed to set tear scanline: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_set_tear_on(jdi->link1, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set tear on: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_set_tear_on(jdi->link2, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set tear on: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_set_address_mode(jdi->link1, false, false, false,
+			false, false, false, false, false);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set address mode: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_set_address_mode(jdi->link2, false, false,
+			false, false, false, false, false, false);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set address mode: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_set_pixel_format(jdi->link1, format);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set pixel format: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_set_pixel_format(jdi->link2, format);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set pixel format: %d\n", err);
+		goto poweroff;
+	}
+
+	err = jdi_panel_write_display_brightness(jdi);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to write display brightness: %d\n", err);
+		goto poweroff;
+	}
+
+	err = jdi_panel_write_control_display(jdi);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to write control display: %d\n", err);
+		goto poweroff;
+	}
+
+	err = jdi_panel_write_adaptive_brightness_control(jdi);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set adaptive brightness ctrl: %d\n", err);
+		goto poweroff;
+	}
+
+	/*
+	 * We need to wait 150ms between mipi_dsi_dcs_exit_sleep_mode() and
+	 * mipi_dsi_dcs_set_display_on().
+	 */
+	msleep(150);
+
+	/*
+	 * Unless we send one frame of image data before display turn on, the
+	 * display may show random pixels (colored snow).
+	 */
+
+	err = mipi_dsi_dcs_set_display_on(jdi->link1);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set display on: %d\n", err);
+		goto poweroff;
+	}
+
+	err = mipi_dsi_dcs_set_display_on(jdi->link2);
+	if (err < 0) {
+		dev_err(panel->dev, "failed to set display on: %d\n", err);
 		goto poweroff;
 	}
 
 	jdi->prepared = true;
 
+	/* wait for 6 frames before continuing */
+	jdi_wait_frames(jdi, 6);
+
 	return 0;
 
 poweroff:
-	ret = regulator_bulk_disable(ARRAY_SIZE(jdi->supplies), jdi->supplies);
-	if (ret < 0)
-		dev_err(dev, "regulator disable failed, %d\n", ret);
+	regulator_disable(jdi->ddi_supply);
 
-	gpiod_set_value(jdi->enable_gpio, 0);
+	/* T6 = 2ms */
+	usleep_range(7000, 9000);
 
-	gpiod_set_value(jdi->reset_gpio, 1);
+	regulator_disable(jdi->supply);
 
-	gpiod_set_value(jdi->dcdc_en_gpio, 0);
-
-	return ret;
+	return err;
 }
 
 static int jdi_panel_enable(struct drm_panel *panel)
@@ -295,7 +447,7 @@ static const struct drm_display_mode default_mode = {
 	.vdisplay = 1800,
 	.vsync_start = 1800 + 4,
 	.vsync_end = 1800 + 4 + 4,
-	.vtotal = 1800 + 4 + 4 + 4
+	.vtotal = 1800 + 4 + 4 + 4,
 };
 
 static int jdi_panel_get_modes(struct drm_panel *panel,
@@ -303,11 +455,12 @@ static int jdi_panel_get_modes(struct drm_panel *panel,
 {
 	struct drm_display_mode *mode;
 	struct jdi_panel *jdi = to_jdi_panel(panel);
-	struct device *dev = &jdi->dsi->dev;
+	struct device *dev = &jdi->link1->dev;
 
 	mode = drm_mode_duplicate(connector->dev, &default_mode);
+	
 	if (!mode) {
-		dev_err(dev, "failed to add mode %ux%ux@%u\n",
+		DRM_INFO("failed to add mode %ux%ux@%u\n",
 			default_mode.hdisplay, default_mode.vdisplay,
 			drm_mode_vrefresh(&default_mode));
 		return -ENOMEM;
@@ -317,70 +470,100 @@ static int jdi_panel_get_modes(struct drm_panel *panel,
 
 	drm_mode_probed_add(connector, mode);
 
-	connector->display_info.width_mm = 95;
-	connector->display_info.height_mm = 151;
+	connector->display_info.width_mm = 211;
+	connector->display_info.height_mm = 148;
+	connector->display_info.bpc = 8;
 
 	return 1;
 }
 
-static int dsi_dcs_bl_get_brightness(struct backlight_device *bl)
+static int jdi_register_get(void *data, u64 *val)
 {
-	struct mipi_dsi_device *dsi = bl_get_data(bl);
-	int ret;
-	u16 brightness = bl->props.brightness;
+	struct jdi_panel *jdi = (struct jdi_panel*) data;
 
-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
-
-	ret = mipi_dsi_dcs_get_display_brightness(dsi, &brightness);
-	if (ret < 0)
-		return ret;
-
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
-
-	return brightness & 0xff;
-}
-
-static int dsi_dcs_bl_update_status(struct backlight_device *bl)
-{
-	struct mipi_dsi_device *dsi = bl_get_data(bl);
-	int ret;
-
-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
-
-	ret = mipi_dsi_dcs_set_display_brightness(dsi, bl->props.brightness);
-	if (ret < 0)
-		return ret;
-
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	*val = jdi->current_register;
 
 	return 0;
 }
 
-static const struct backlight_ops dsi_bl_ops = {
-	.update_status = dsi_dcs_bl_update_status,
-	.get_brightness = dsi_dcs_bl_get_brightness,
-};
-
-static struct backlight_device *
-drm_panel_create_dsi_backlight(struct mipi_dsi_device *dsi)
+static int jdi_register_set(void *data, u64 val)
 {
-	struct device *dev = &dsi->dev;
-	struct backlight_properties props;
+	struct jdi_panel *jdi = (struct jdi_panel*) data;
 
-	memset(&props, 0, sizeof(props));
-	props.type = BACKLIGHT_RAW;
-	props.brightness = 255;
-	props.max_brightness = 255;
+	jdi->current_register = val;
 
-	return devm_backlight_device_register(dev, dev_name(dev), dev, dsi,
-					      &dsi_bl_ops, &props);
+	return 0;
+}
+
+static int jdi_value_get(void *data, u64 *val)
+{
+	struct jdi_panel *jdi = (struct jdi_panel*) data;
+	int ret;
+	u8 value = 0;
+
+	ret = mipi_dsi_dcs_read(jdi->link1, jdi->current_register, &value, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write control display: %d\n", ret);
+		return ret;
+	}
+
+	*val = value;
+
+	return 0;
+}
+
+static int jdi_value_set(void *data, u64 val)
+{
+	struct jdi_panel *jdi = (struct jdi_panel*) data;
+	int ret;
+	u8 value = val;
+
+	ret = mipi_dsi_dcs_write(jdi->link1, jdi->current_register, &value, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write control display: %d\n", ret);
+		return ret;
+	}
+
+	ret = mipi_dsi_dcs_write(jdi->link2, jdi->current_register, &value, 1);
+	if (ret < 1) {
+		DRM_INFO("failed to write control display: %d\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(jdi_register_fops,
+			jdi_register_get, jdi_register_set,
+			"%llu\n");
+
+DEFINE_SIMPLE_ATTRIBUTE(jdi_value_fops,
+			jdi_value_get, jdi_value_set,
+			"%llu\n");
+
+static int jdi_panel_debugfs_init(struct jdi_panel *jdi)
+{
+	jdi->debugfs_entry = debugfs_create_dir("jdi-lpm102a188a", NULL);
+
+	debugfs_create_file("register", S_IWUGO | S_IRUGO, jdi->debugfs_entry,
+				jdi, &jdi_register_fops);
+
+	debugfs_create_file("value", S_IWUGO | S_IRUGO, jdi->debugfs_entry,
+				jdi, &jdi_value_fops);
+
+	return 0;
+}
+
+static void jdi_panel_debugfs_cleanup(struct jdi_panel *jdi)
+{
+	debugfs_remove_recursive(jdi->debugfs_entry);
 }
 
 static const struct drm_panel_funcs jdi_panel_funcs = {
-	.disable = jdi_panel_disable,
-	.unprepare = jdi_panel_unprepare,
 	.prepare = jdi_panel_prepare,
 	.enable = jdi_panel_enable,
+	.disable = jdi_panel_disable,
+	.unprepare = jdi_panel_unprepare,
 	.get_modes = jdi_panel_get_modes,
 };
 
@@ -392,128 +575,205 @@ MODULE_DEVICE_TABLE(of, jdi_of_match);
 
 static int jdi_panel_add(struct jdi_panel *jdi)
 {
-	struct device *dev = &jdi->dsi->dev;
-	int ret;
-	unsigned int i;
+	struct device_node *np;
+	enum of_gpio_flags gpio_flags;
+	int err = 0;
+	unsigned int value;
 
 	jdi->mode = &default_mode;
 
-	for (i = 0; i < ARRAY_SIZE(jdi->supplies); i++)
-		jdi->supplies[i].supply = regulator_names[i];
+	jdi->supply = devm_regulator_get(&jdi->link1->dev, "power");
+	if (IS_ERR(jdi->supply))
+		return PTR_ERR(jdi->supply);
 
-	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(jdi->supplies),
-				      jdi->supplies);
-	if (ret < 0) {
-		dev_err(dev, "failed to init regulator, ret=%d\n", ret);
-		return ret;
+	jdi->ddi_supply = devm_regulator_get(&jdi->link1->dev, "ddi");
+	if (IS_ERR(jdi->ddi_supply))
+		return PTR_ERR(jdi->ddi_supply);
+
+	np = of_parse_phandle(jdi->link1->dev.of_node, "backlight", 0);
+	if (np) {
+		jdi->backlight = of_find_backlight_by_node(np);
+		of_node_put(np);
+
+		if (!jdi->backlight)
+			return -EPROBE_DEFER;
 	}
 
-	jdi->enable_gpio = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
-	if (IS_ERR(jdi->enable_gpio)) {
-		ret = PTR_ERR(jdi->enable_gpio);
-		dev_err(dev, "cannot get enable-gpio %d\n", ret);
-		return ret;
+	jdi->enable_gpio = of_get_named_gpio_flags(jdi->link1->dev.of_node,
+				"enable-gpio", 0, &gpio_flags);
+	if (!gpio_is_valid(jdi->enable_gpio)) {
+		DRM_INFO("enable gpio not found: %d\n", err);
+		return -ENODEV;
 	}
 
-	jdi->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(jdi->reset_gpio)) {
-		ret = PTR_ERR(jdi->reset_gpio);
-		dev_err(dev, "cannot get reset-gpios %d\n", ret);
-		return ret;
+	if (gpio_flags & OF_GPIO_ACTIVE_LOW)
+		jdi->enable_gpio_flags |= GPIO_ACTIVE_LOW;
+
+	err = devm_gpio_request(&jdi->link1->dev, jdi->enable_gpio, "jdi-enable");
+	if (err < 0) {
+		DRM_INFO("Request enable gpio failed: %d\n", err);
+		return err;
 	}
 
-	jdi->dcdc_en_gpio = devm_gpiod_get(dev, "dcdc-en", GPIOD_OUT_LOW);
-	if (IS_ERR(jdi->dcdc_en_gpio)) {
-		ret = PTR_ERR(jdi->dcdc_en_gpio);
-		dev_err(dev, "cannot get dcdc-en-gpio %d\n", ret);
-		return ret;
+	value = (jdi->enable_gpio_flags & GPIO_ACTIVE_LOW) ? 0 : 1;
+	err = gpio_direction_output(jdi->enable_gpio, value);
+	if (err < 0) {
+		DRM_INFO("Set enable gpio direction failed: %d\n", err);
+		return err;
 	}
 
-	jdi->backlight = drm_panel_create_dsi_backlight(jdi->dsi);
-	if (IS_ERR(jdi->backlight)) {
-		ret = PTR_ERR(jdi->backlight);
-		dev_err(dev, "failed to register backlight %d\n", ret);
-		return ret;
+	jdi->reset_gpio = of_get_named_gpio_flags(jdi->link1->dev.of_node,
+				"reset-gpio", 0, &gpio_flags);
+	if (!gpio_is_valid(jdi->reset_gpio)) {
+		DRM_INFO("reset gpio not found: %d\n", err);
+		return -ENODEV;
 	}
 
-	drm_panel_init(&jdi->base, &jdi->dsi->dev, &jdi_panel_funcs,
-		       DRM_MODE_CONNECTOR_DSI);
+	if (gpio_flags & OF_GPIO_ACTIVE_LOW)
+		jdi->reset_gpio_flags |= GPIO_ACTIVE_LOW;
 
-	ret = drm_panel_add(&jdi->base);
+	err = devm_gpio_request(&jdi->link1->dev, jdi->reset_gpio, "jdi-reset");
+	if (err < 0) {
+		DRM_INFO("Request reset gpio failed: %d\n", err);
+		return err;
+	}
 
-	return ret;
+	value = (jdi->reset_gpio_flags & GPIO_ACTIVE_LOW) ? 1 : 0;
+	err = gpio_direction_output(jdi->reset_gpio, value);
+	if (err < 0) {
+		DRM_INFO("Set enable gpio direction failed: %d\n", err);
+		return err;
+	}
+
+	drm_panel_init(&jdi->base, &jdi->link1->dev, &jdi_panel_funcs, DRM_MODE_CONNECTOR_DSI);
+	err = drm_panel_add(&jdi->base);
+
+	if (err < 0) {
+		DRM_INFO("drm_panel_add failed: %d\n", err);
+		goto put_backlight;
+	}
+
+	jdi_panel_debugfs_init(jdi);
+
+	return 0;
+
+put_backlight:
+	if (jdi->backlight)
+		put_device(&jdi->backlight->dev);
+
+	return err;
 }
 
 static void jdi_panel_del(struct jdi_panel *jdi)
 {
 	if (jdi->base.dev)
 		drm_panel_remove(&jdi->base);
+
+	if (jdi->backlight)
+		put_device(&jdi->backlight->dev);
+
+	if (jdi->link2)
+		put_device(&jdi->link2->dev);
 }
 
-static int jdi_panel_probe(struct mipi_dsi_device *dsi)
+static int jdi_panel_dsi_probe(struct mipi_dsi_device *dsi)
 {
+	struct mipi_dsi_device *secondary = NULL;
 	struct jdi_panel *jdi;
-	int ret;
+	struct device_node *np;
+	int err;
 
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
-	dsi->mode_flags =  MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
-			   MIPI_DSI_CLOCK_NON_CONTINUOUS;
+	dsi->mode_flags = MIPI_DSI_MODE_LPM;
 
-	jdi = devm_kzalloc(&dsi->dev, sizeof(*jdi), GFP_KERNEL);
-	if (!jdi)
-		return -ENOMEM;
+	/* Find DSI-LINK1 */
+	np = of_parse_phandle(dsi->dev.of_node, "link2", 0);
+	if (np) {
+		secondary = of_find_mipi_dsi_device_by_node(np);
+		of_node_put(np);
 
-	mipi_dsi_set_drvdata(dsi, jdi);
+		if (!secondary)
+			return -EPROBE_DEFER;
+	}
 
-	jdi->dsi = dsi;
+	/* register a panel for only the DSI-LINK1 interface */
+	if (secondary) {
+		jdi = devm_kzalloc(&dsi->dev, sizeof(*jdi), GFP_KERNEL);
+		if (!jdi) {
+			put_device(&secondary->dev);
+			return -ENOMEM;
+		}
 
-	ret = jdi_panel_add(jdi);
-	if (ret < 0)
-		return ret;
+		mipi_dsi_set_drvdata(dsi, jdi);
 
-	return mipi_dsi_attach(dsi);
+		jdi->link2 = secondary;
+		jdi->link1 = dsi;
+
+		err = jdi_panel_add(jdi);
+		if (err < 0) {
+			put_device(&secondary->dev);
+			return err;
+		}
+	}
+
+	err = mipi_dsi_attach(dsi);
+	if (err < 0) {
+		if (secondary)
+			jdi_panel_del(jdi);
+
+		return err;
+	}
+
+	return 0;
 }
 
-static int jdi_panel_remove(struct mipi_dsi_device *dsi)
+static int jdi_panel_dsi_remove(struct mipi_dsi_device *dsi)
 {
 	struct jdi_panel *jdi = mipi_dsi_get_drvdata(dsi);
-	int ret;
+	int err;
 
-	ret = jdi_panel_disable(&jdi->base);
-	if (ret < 0)
-		dev_err(&dsi->dev, "failed to disable panel: %d\n", ret);
+	/* only detach from host for the DSI-LINK2 interface */
+	if (!jdi) {
+		mipi_dsi_detach(dsi);
+		return 0;
+	}
 
-	ret = mipi_dsi_detach(dsi);
-	if (ret < 0)
-		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n",
-			ret);
+	err = jdi_panel_disable(&jdi->base);
+	if (err < 0)
+		dev_err(&dsi->dev, "failed to disable panel: %d\n", err);
 
+	err = mipi_dsi_detach(dsi);
+	if (err < 0)
+		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n", err);
+
+	drm_panel_detach(&jdi->base);
 	jdi_panel_del(jdi);
 
 	return 0;
 }
 
-static void jdi_panel_shutdown(struct mipi_dsi_device *dsi)
+static void jdi_panel_dsi_shutdown(struct mipi_dsi_device *dsi)
 {
 	struct jdi_panel *jdi = mipi_dsi_get_drvdata(dsi);
 
+	if (!jdi)
+		return;
+
+	jdi_panel_debugfs_cleanup(jdi);
 	jdi_panel_disable(&jdi->base);
 }
 
-static struct mipi_dsi_driver jdi_panel_driver = {
+static struct mipi_dsi_driver jdi_panel_dsi_driver = {
 	.driver = {
 		.name = "panel-jdi-lpm102a188a-dsi",
 		.of_match_table = jdi_of_match,
 	},
-	.probe = jdi_panel_probe,
-	.remove = jdi_panel_remove,
-	.shutdown = jdi_panel_shutdown,
+	.probe = jdi_panel_dsi_probe,
+	.remove = jdi_panel_dsi_remove,
+	.shutdown = jdi_panel_dsi_shutdown,
 };
-module_mipi_dsi_driver(jdi_panel_driver);
-
-MODULE_AUTHOR("Sumit Semwal <sumit.semwal@linaro.org>");
-MODULE_AUTHOR("Vinay Simha BN <simhavcs@gmail.com>");
-MODULE_AUTHOR("Denys Vitali <denys@denv.it>");
-MODULE_DESCRIPTION("JDI LPM102A188A");
-MODULE_LICENSE("GPL v2");
+module_mipi_dsi_driver(jdi_panel_dsi_driver);
+MODULE_AUTHOR("Sean Paul <seanpaul@chromium.org>");
+MODULE_DESCRIPTION("DRM Driver for JDI LPM102A188A");
+MODULE_LICENSE("GPL and additional rights");
