@@ -20,8 +20,8 @@
 	};
 
 	chosen {
-    bootargs = "cros_legacy init=/init rw fbcon loglevel=0 debug earlyprintk drm.atomic=1 no_console_suspend firmware_class.path=/lib/firmware";
-    stdout-path = "serial0:115200n8";
+		bootargs = "init=/init rw fbcon earlyprintk no_console_suspend firmware_class.path=/lib/firmware";
+        stdout-path = "serial0:115200n8";
 	};
 
 	memory {
@@ -1341,6 +1341,11 @@
 		};
 	};
 
+	gpu@57000000 {
+		status = "okay";
+		vdd-supply = <&max77621_gpu>;
+	};
+
 	serial@70006000 {
 		status = "okay";
 	};
@@ -1446,6 +1451,7 @@
 				battery: bq27742@55 {
 					compatible = "ti,bq27742";
 					reg = <0x55>;
+					battery-name = "battery";
 				};
 			};
 		};
@@ -1470,11 +1476,29 @@
 			maxim,enable-active-discharge;
 			maxim,enable-bias-control;
 			maxim,enable-etr;
-			maxim,enable-gpio = <&pmic 5 0>;
+			maxim,enable-gpio = <&max77620 5 0>;
 			maxim,externally-enable;
 		};
 
-		pmic: pmic@3c {
+		max77621_gpu: max77621@1c {
+			compatible = "maxim,max77621";
+			reg = <0x1c>;
+			interrupt-parent = <&gpio>;
+			interrupts = <TEGRA_GPIO(A, 6) IRQ_TYPE_LEVEL_LOW>;
+			regulator-name = "PPVAR_GPU";
+			regulator-min-microvolt = <800000>;
+			regulator-max-microvolt = <1150000>;
+			regulator-ramp-delay = <12500>;
+			maxim,externally-enable;
+			maxim,enable-gpio = <&max77620 6 0>;
+			maxim,dvs-default-state = <1>;
+			maxim,disable-etr;
+			maxim,enable-active-discharge;
+			maxim,enable-bias-control;
+		};
+
+
+		max77620: max77620@3c {
 			compatible = "maxim,max77620";
 			reg = <0x3c>;
 			interrupts = <GIC_SPI 86 IRQ_TYPE_LEVEL_HIGH>;
@@ -1518,6 +1542,12 @@
 					pins = "gpio4";
 					function = "32k-out1";
 				};
+			};
+
+			watchdog {
+				maxim,wdt-timeout = <16>;
+				maxim,wdt-clear-time = <13>;
+				status = "disabled";
 			};
 
 			fps {
@@ -1594,6 +1624,7 @@
 					regulator-enable-ramp-delay = <26>;
 					regulator-ramp-delay = <100000>;
 					regulator-boot-on;
+					regulator-always-on;
 					maxim,active-fps-source = <MAX77620_FPS_SRC_NONE>;
 					maxim,active-fps-power-up-slot = <0>;
 					maxim,active-fps-power-down-slot = <7>;
@@ -1853,24 +1884,29 @@
 		};
 	};
 
-	sdhci1: sdhci@700b0200 { /* WiFi/BT on this bus */
-		power-gpios = <&gpio TEGRA_GPIO(H, 1) GPIO_ACTIVE_HIGH>;
-		vqmmc-supply = <&pp1800>;
-		vmmc-supply = <&pp3300>;
-		bus-width = <4>;
-		keep-power-in-suspend;
-		non-removable;
-		status = "okay";
-	};
+ 	sdhci1: sdhci@700b0200 {
+		compatible = "nvidia,tegra210-sdhci";
+		reg = <0x0 0x700b0200 0x0 0x200>;
+		interrupts = <GIC_SPI 15 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&tegra_car TEGRA210_CLK_SDMMC2>,
+			 <&tegra_car TEGRA210_CLK_SDMMC_LEGACY>;
+		clock-names = "sdhci", "tmclk";
+		resets = <&tegra_car 9>;
+		reset-names = "sdhci";
+		status = "ok";
+ 	};
+ 
 
 	sdhci0: sdhci@700b0600 {
-		bus-width = <8>;
-		non-removable;
-		mmc-hs200-1_8v;
-		vqmmc-supply = <&pp1800>;
-		vmmc-supply = <&pp1800>;
-		keep-power-in-suspend;
-		status = "okay";
+		compatible = "nvidia,tegra210-sdhci";
+ 		reg = <0x0 0x700b0600 0x0 0x200>;
+ 		interrupts = <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&tegra_car TEGRA210_CLK_SDMMC4>,
+			<&tegra_car TEGRA210_CLK_SDMMC_LEGACY>;
+		clock-names = "sdhci", "tmclk";
+ 		resets = <&tegra_car 15>;
+ 		reset-names = "sdhci";
+ 		status = "ok";
 	};
 
 	clock@70110000 {
@@ -1899,6 +1935,7 @@
 
 	clk32k_in: clock@0 {
 		compatible = "fixed-clock";
+
 		clock-frequency = <32768>;
 		#clock-cells = <0>;
 	};
@@ -1930,6 +1967,7 @@
 
 	gpio-keys {
 		compatible = "gpio-keys";
+		status = "okay";
 
 		power {
 			label = "Power";
@@ -1978,8 +2016,10 @@
 		method = "smc";
 	};
 
+
 	ppvar_sys: regulator@0 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "PPVAR_SYS";
 		regulator-min-microvolt = <4400000>;
 		regulator-max-microvolt = <4400000>;
@@ -1988,52 +2028,63 @@
 
 	pplcd_vdd: regulator@1 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "PPLCD_VDD";
 		regulator-min-microvolt = <4400000>;
 		regulator-max-microvolt = <4400000>;
 		gpio = <&gpio TEGRA_GPIO(V, 4) 0>;
 		enable-active-high;
 		regulator-boot-on;
+		vin-supply = <&ppvar_sys>;
 	};
 
 	pp3000_always: regulator@2 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "PP3000_ALWAYS";
 		regulator-min-microvolt = <3000000>;
 		regulator-max-microvolt = <3000000>;
 		regulator-always-on;
+		vin-supply = <&ppvar_sys>;
 	};
 
 	pp3300: regulator@3 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "PP3300";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 		regulator-boot-on;
 		regulator-always-on;
 		enable-active-high;
+		vin-supply = <&ppvar_sys>;
 	};
 
 	pp5000: regulator@4 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "PP5000";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
 		regulator-always-on;
+		regulator-boot-on;
 	};
 
 	pp1800_lcdio: regulator@5 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "PP1800_LCDIO";
 		regulator-min-microvolt = <1800000>;
 		regulator-max-microvolt = <1800000>;
 		gpio = <&gpio TEGRA_GPIO(V, 3) 0>;
 		enable-active-high;
 		regulator-boot-on;
+		vin-supply = <&ppvar_sys>;
 	};
 
 	pp1800_cam: regulator@6 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "PP1800_CAM";
 		regulator-min-microvolt = <1800000>;
 		regulator-max-microvolt = <1800000>;
@@ -2043,6 +2094,7 @@
 
 	usbc_vbus: regulator@7 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "USBC_VBUS";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
@@ -2050,6 +2102,7 @@
 
 	vdd_dsi_csi: regulator@8 {
 		compatible = "regulator-fixed";
+
 		regulator-name = "AVDD_DSI_CSI_1V2";
 		regulator-min-microvolt = <1200000>;
 		regulator-max-microvolt = <1200000>;
