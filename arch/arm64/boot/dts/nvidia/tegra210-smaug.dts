@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
 
+#include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/mfd/max77620.h>
+#include <dt-bindings/gpio/tegra-gpio.h>
 #include <dt-bindings/pinctrl/pinctrl-tegra.h>
 
 #include "tegra210.dtsi"
@@ -20,7 +22,7 @@
 	};
 
 	chosen {
-		bootargs = "init=/init rw fbcon debug";
+		bootargs = "cros_legacy init=/init rw fbcon no_console_suspend";
         stdout-path = "serial0:115200n8";
 	};
 
@@ -1343,7 +1345,7 @@
 
 	gpu@57000000 {
 		status = "okay";
-		vdd-supply = <&max77621_gpu>;
+		vdd-supply = <&vdd_gpu>;
 	};
 
 	serial@70006000 {
@@ -1476,38 +1478,22 @@
 			maxim,enable-active-discharge;
 			maxim,enable-bias-control;
 			maxim,enable-etr;
-			maxim,enable-gpio = <&max77620 5 0>;
+			maxim,enable-gpio = <&pmic 5 0>;
 			maxim,externally-enable;
 		};
 
-		max77621_gpu: max77621@1c {
-			compatible = "maxim,max77621";
-			reg = <0x1c>;
-			interrupt-parent = <&gpio>;
-			interrupts = <TEGRA_GPIO(A, 6) IRQ_TYPE_LEVEL_LOW>;
-			regulator-name = "PPVAR_GPU";
-			regulator-min-microvolt = <800000>;
-			regulator-max-microvolt = <1150000>;
-			regulator-ramp-delay = <12500>;
-			maxim,externally-enable;
-			maxim,enable-gpio = <&max77620 6 0>;
-			maxim,dvs-default-state = <1>;
-			maxim,disable-etr;
-			maxim,enable-active-discharge;
-			maxim,enable-bias-control;
-		};
 
-
-		max77620: max77620@3c {
+		pmic: pmic@3c {
 			compatible = "maxim,max77620";
 			reg = <0x3c>;
-			interrupts = <GIC_SPI 86 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-parent = <&tegra_pmc>;
+			interrupts = <51 IRQ_TYPE_LEVEL_LOW>;
 
 			#interrupt-cells = <2>;
 			interrupt-controller;
 
-			gpio-controller;
 			#gpio-cells = <2>;
+			gpio-controller;
 
 			pinctrl-names = "default";
 			pinctrl-0 = <&max77620_default>;
@@ -1835,15 +1821,14 @@
 		dvdd-pex-pll-supply = <&avddio_1v05>;
 		hvdd-pex-pll-e-supply = <&pp1800>;
 
+		extcon = <&usbc_extcon>;
+		
 		status = "okay";
 	};
 
 	padctl@7009f000 {
 		status = "okay";
 
-		dvddio-pex-supply = <&avddio_1v05>;
-		hvddio-pex-supply = <&pp1800>;
-		avdd-usb-supply = <&pp3300>;
 		avdd-pll-utmip-supply = <&pp1800>;
 		avdd-pll-uerefe-supply = <&pp1050_avdd>;
 		dvdd-pex-pll-supply = <&avddio_1v05>;
@@ -1865,30 +1850,6 @@
 				status = "okay";
 
 				lanes {
-					pcie-0 {
-						nvidia,function = "pcie-x1";
-						status = "okay";
-					};
-					pcie-1 {
-						nvidia,function = "pcie-x4";
-						status = "okay";
-					};
-					pcie-2 {
-						nvidia,function = "pcie-x4";
-						status = "okay";
-					};
-					pcie-3 {
-						nvidia,function = "pcie-x4";
-						status = "okay";
-					};
-					pcie-4 {
-						nvidia,function = "pcie-x4";
-						status = "okay";
-					};
-					pcie-5 {
-						nvidia,function = "usb3-ss";
-						status = "okay";
-					};
 					pcie-6 {
 						nvidia,function = "usb3-ss";
 						status = "okay";
@@ -1901,19 +1862,17 @@
 			usb2-0 {
 				status = "okay";
 				vbus-supply = <&usbc_vbus>;
-				mode = "otg";
-				usb-role-switch = "true";
+				mode = "host";
 			};
 
 			usb3-0 {
-				nvidia,usb2-companion = <0>;
-				vbus-supply = <&usbc_vbus>;
+				nvidia,usb2-companion = <1>;
 				status = "okay";
 			};
 		};
 	};
 
- 	sdhci1: sdhci@700b0200 {
+ 	sdhci1: sdhci@700b0200 { /* WiFi/BT on this bus */
 		compatible = "nvidia,tegra210-sdhci";
 		reg = <0x0 0x700b0200 0x0 0x200>;
 		interrupts = <GIC_SPI 15 IRQ_TYPE_LEVEL_HIGH>;
@@ -1928,7 +1887,8 @@
 
 	sdhci0: sdhci@700b0600 {
 		compatible = "nvidia,tegra210-sdhci";
- 		reg = <0x0 0x700b0600 0x0 0x200>;
+ 		power-gpios = <&gpio TEGRA_GPIO(H, 1) GPIO_ACTIVE_HIGH>;
+		reg = <0x0 0x700b0600 0x0 0x200>;
  		interrupts = <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&tegra_car TEGRA210_CLK_SDMMC4>,
 			<&tegra_car TEGRA210_CLK_SDMMC_LEGACY>;
@@ -1988,7 +1948,6 @@
 
 		idle-states {
 			cpu-sleep {
-				arm,psci-suspend-param = <0x00010007>;
 				status = "okay";
 			};
 		};
@@ -2127,6 +2086,8 @@
 		regulator-name = "USBC_VBUS";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
 	};
 
 	vdd_dsi_csi: regulator@8 {
@@ -2136,5 +2097,17 @@
 		regulator-min-microvolt = <1200000>;
 		regulator-max-microvolt = <1200000>;
 		vin-supply = <&pp1200_avdd>;
+	};
+
+	vdd_gpu: regulator@100 {
+		compatible = "pwm-regulator";
+		pwms = <&pwm 1 4880>;
+		regulator-name = "VDD_GPU";
+		regulator-min-microvolt = <710000>;
+		regulator-max-microvolt = <1320000>;
+		enable-gpios = <&pmic 6 GPIO_ACTIVE_HIGH>;
+		regulator-ramp-delay = <80>;
+		regulator-enable-ramp-delay = <2000>;
+		regulator-settling-time-us = <160>;
 	};
 };
