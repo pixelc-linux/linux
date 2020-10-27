@@ -279,6 +279,11 @@ static int bcm_gpio_set_power(struct bcm_device *dev, bool powered)
 
 	dev->res_enabled = powered;
 
+	if (powered) {
+		/* Don't rely on CTS and wait until chip came up */
+		msleep(15);
+	}
+
 	return 0;
 
 err_revert_shutdown:
