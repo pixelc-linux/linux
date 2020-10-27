@@ -18,7 +18,13 @@
 		     "google,smaug", "nvidia,tegra210";
 
 	aliases {
+		rtc0 = "/i2c@7000d000/pmic@3c";
+		rtc1 = "/rtc@7000e000";
 		serial0 = &uarta;
+		serial1 = &uartc;
+		serial2 = &uartd;
+		sdhci0 = "sdhci@700b0600";
+		sdhci1 = "sdhci@700b0200";
 	};
 
 	chosen {
@@ -1409,25 +1415,24 @@
 		};
 	};
 
-	serial@70006200 {
+	uartc: serial@70006200 {
 		compatible = "nvidia,tegra210-hsuart", "nvidia,tegra30-hsuart";
 		status = "okay";
 	};
 
-	serial@70006300 {
-		compatible = "nvidia,tegra124-hsuart", "nvidia,tegra30-hsuart";
+	uartd: serial@70006300 {
+		compatible = "nvidia,tegra210-hsuart", "nvidia,tegra30-hsuart";
+		nvidia,adjust-baud-rates = <0 9600 100>,
+					   <9600 115200 200>;
 		status = "okay";
 
 		bluetooth {
-			/*pinctrl-names = "default";
-			pinctrl-0 = <&bt_wake_ap_ph5>, <&bt_enable_l>,
-				    <&bt_dev_wake>;*/
-	
 			compatible = "brcm,bcm43540-bt";
-			shutdown-gpios = <&gpio TEGRA_GPIO(H, 4) GPIO_ACTIVE_HIGH>;
-			host-wakeup-gpios = <&gpio TEGRA_GPIO(H, 5) GPIO_ACTIVE_LOW>;
-			device-wakeup-gpios = <&gpio TEGRA_GPIO(H, 3) GPIO_ACTIVE_HIGH>;
 			max-speed		= <3000000>;
+
+			host-wakeup-gpios = <&gpio TEGRA_GPIO(H, 5) GPIO_ACTIVE_HIGH>;
+			shutdown-gpios = <&gpio TEGRA_GPIO(H, 4) GPIO_ACTIVE_HIGH>;
+			device-wakeup-gpios = <&gpio TEGRA_GPIO(H, 3) GPIO_ACTIVE_HIGH>;
 			brcm,bt-pcm-int-params	= [01 02 00 01 01];
 		};
 	};
